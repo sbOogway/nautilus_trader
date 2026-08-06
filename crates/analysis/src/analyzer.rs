@@ -51,10 +51,7 @@ pub type Statistic = Arc<dyn PortfolioStatistic<Item = f64> + Send + Sync>;
 /// and customizable statistics.
 #[repr(C)]
 #[derive(Debug)]
-#[cfg_attr(
-    feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.analysis")
-)]
+#[cfg_attr(feature = "python", pyo3::pyclass(module = "nautilus_trader.analysis"))]
 #[cfg_attr(
     feature = "python",
     pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.analysis")
@@ -297,6 +294,7 @@ impl PortfolioAnalyzer {
             pnls,
             returns: self.get_performance_stats_returns(),
             general: self.get_performance_stats_general(),
+            returns_series: self.returns.clone(),
         }
     }
 
@@ -378,6 +376,10 @@ impl PortfolioAnalyzer {
         let mut daily_balances = BTreeMap::new();
 
         for event in events {
+            if event.balances.is_empty() {
+                continue;
+            }
+
             if event.balances.len() != 1 {
                 return None;
             }
@@ -1921,6 +1923,50 @@ mod tests {
     }
 
     #[rstest]
+    fn test_calculate_statistics_skips_empty_balance_events() {
+        let mut analyzer = PortfolioAnalyzer::new();
+        let currency = Currency::USD();
+        let mut starting_balances = AHashMap::new();
+        starting_balances.insert(currency, Money::new(1000.0, currency));
+        let mut current_balances = AHashMap::new();
+        current_balances.insert(currency, Money::new(1050.0, currency));
+        let empty_event = AccountState::new(
+            AccountId::new("test-account"),
+            AccountType::Cash,
+            vec![],
+            vec![],
+            true,
+            UUID4::new(),
+            UnixNanos::from(1_705_276_800_000_000_000),
+            UnixNanos::from(1_705_276_800_000_000_000),
+            Some(currency),
+        );
+        let account = MockAccount {
+            starting_balances,
+            current_balances,
+            events: vec![
+                create_account_state(1000.0, currency, 1_704_067_200_000_000_000),
+                empty_event,
+                create_account_state(1050.0, currency, 1_706_659_200_000_000_000),
+            ],
+        };
+
+        analyzer.calculate_statistics(&account, &[]);
+
+        let portfolio_returns = analyzer.portfolio_returns();
+        assert_eq!(portfolio_returns.len(), 30);
+        assert_eq!(analyzer.returns(), portfolio_returns);
+        assert!(approx_eq!(
+            f64,
+            *portfolio_returns
+                .get(&UnixNanos::from(1_706_659_200_000_000_000))
+                .unwrap(),
+            0.05,
+            epsilon = 1e-9
+        ));
+    }
+
+    #[rstest]
     fn test_calculate_statistics_skips_non_finite_account_returns() {
         let mut analyzer = PortfolioAnalyzer::new();
         let currency = Currency::USD();
@@ -2114,6 +2160,7 @@ mod tests {
             &snapshot.general,
             &analyzer.get_performance_stats_general()
         ));
+        assert_eq!(&snapshot.returns_series, analyzer.returns());
 
         for currency in analyzer.currencies() {
             let expected = analyzer

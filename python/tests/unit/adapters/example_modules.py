@@ -21,7 +21,7 @@ from typing import Any
 from typing import ClassVar
 
 
-_EXAMPLES_DIR = Path(__file__).resolve().parents[3] / "examples"
+_EXAMPLES_DIR = Path(__file__).resolve().parents[4] / "examples/live"
 
 
 def load_example_module(adapter: str, module: str) -> ModuleType:
@@ -66,6 +66,14 @@ class _CaptureBuilder:
 
     def with_risk_engine_config(self, config: object) -> "_CaptureBuilder":
         self._captured["risk_engine_config"] = config
+        return self
+
+    def with_timeout_disconnection_secs(self, timeout_secs: int) -> "_CaptureBuilder":
+        self._captured["timeout_disconnection_secs"] = timeout_secs
+        return self
+
+    def with_delay_post_stop_secs(self, delay_secs: int) -> "_CaptureBuilder":
+        self._captured["delay_post_stop_secs"] = delay_secs
         return self
 
     def add_data_client(self, *args: object) -> "_CaptureBuilder":

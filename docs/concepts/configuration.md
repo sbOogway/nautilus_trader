@@ -38,16 +38,18 @@ copy-paste mistakes before a node or client starts with the wrong settings.
 
 ## Python configs
 
-Python config classes (msgspec structs) accept `None` for optional parameters.
-For plain `T` fields, `None` means "use the default." For `Option<T>` fields,
-`None` preserves the field's optional meaning (disabled, unbounded, etc.).
+Import core config types from `nautilus_trader.config`. Import adapter configs from the adapter's
+public module, such as `nautilus_trader.adapters.bybit`.
 
-All Python config classes inherit from `NautilusConfig`, which sets
-`forbid_unknown_fields=True` on the underlying `msgspec.Struct`. Unknown keys now raise
-`msgspec.ValidationError` during decoding.
+Most runtime config classes are PyO3 wrappers around Rust config structs. Constructor parameters use
+`None` either to resolve the Rust default or to preserve an optional value, depending on the field.
+Read‑only properties expose the resolved non‑secret values. Unsupported keywords raise `TypeError`
+for fixed config classes. Extensible component configs such as `DataActorConfig`, `StrategyConfig`,
+and `ExecutionAlgorithmConfig` accept extra fields for Python subclasses. Python‑owned analysis
+configs retain their documented dataclass behavior.
 
 ```python
-from nautilus_trader.adapters.bybit.config import BybitDataClientConfig
+from nautilus_trader.adapters.bybit import BybitDataClientConfig
 
 # All defaults: 60s timeout, 3 retries, etc.
 config = BybitDataClientConfig()
@@ -55,8 +57,8 @@ config = BybitDataClientConfig()
 # Override just the timeout
 config = BybitDataClientConfig(http_timeout_secs=30)
 
-# Disable instrument status polling
-config = BybitDataClientConfig(instrument_status_poll_secs=None)
+# Read back the resolved value
+assert config.http_timeout_secs == 30
 ```
 
 ## Rust configs
@@ -93,7 +95,7 @@ All three produce identical results for unspecified fields.
 Most adapter configs share a common set of fields:
 
 | Field                              | Type   | Default | Purpose                       |
-|------------------------------------|--------|---------|-------------------------------|
+| ---------------------------------- | ------ | ------- | ----------------------------- |
 | `http_timeout_secs`                | `u64`  | 60      | REST request timeout.         |
 | `max_retries`                      | `u32`  | 3       | Maximum retry attempts.       |
 | `retry_delay_initial_ms`           | `u64`  | 1,000   | Initial backoff delay.        |
@@ -117,8 +119,8 @@ from nautilus_trader.config import LiveExecEngineConfig
 
 config = LiveExecEngineConfig(
     reconciliation=True,
-    open_check_interval_secs=30.0,       # Enable open order polling
-    open_check_lookback_mins=60,         # Look back 60 minutes
+    open_check_interval_secs=30.0,  # Enable open order polling
+    open_check_lookback_mins=60,  # Look back 60 minutes
     # position_check_interval_secs=None  # Disabled by default
 )
 ```

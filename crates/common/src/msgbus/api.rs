@@ -258,7 +258,7 @@ pub fn subscribe_any(
     for (topic, subs) in &mut msgbus_ref_mut.topics {
         if is_matching_backtracking(*topic, sub.pattern) {
             subs.push(sub.clone());
-            subs.sort();
+            subs.sort_by(Subscription::delivery_order);
             log::debug!("Added subscription for '{topic}'");
         }
     }
@@ -1371,7 +1371,7 @@ pub fn send_response(correlation_id: &UUID4, message: &DataResponse) {
     let handler = {
         let bus = get_message_bus();
         let mut bus = bus.borrow_mut();
-        let handler = bus.get_response_handler(correlation_id).cloned();
+        let handler = bus.take_response_handler(correlation_id);
         bus.increment_res_count();
         handler
     };
@@ -1620,16 +1620,18 @@ mod tests {
     use nautilus_model::{data::OptionGreekValues, enums::GreeksConvention};
     use nautilus_model::{
         data::{
-            Bar, FundingRateUpdate, IndexPriceUpdate, MarkPriceUpdate, OptionGreeks,
-            OrderBookDelta, OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
+            Bar, BarType, DataType, FundingRateUpdate, IndexPriceUpdate, MarkPriceUpdate,
+            OptionGreeks, OrderBookDelta, OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
             stubs::{stub_custom_data, stub_deltas, stub_depth10},
         },
-        enums::{AccountType, OrderSide, PositionSide},
+        enums::{AccountType, BookType, OrderSide, PositionSide},
         events::{OrderEventAny, PositionEvent, PositionOpened, order::spec::OrderDeniedSpec},
         identifiers::{
             AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId,
+            Venue,
         },
         instruments::{InstrumentAny, stubs::audusd_sim},
+        orderbook::OrderBook,
         types::{Currency, Price, Quantity},
     };
     #[cfg(feature = "sbe")]
@@ -1644,8 +1646,10 @@ mod tests {
         enums::SerializationEncoding,
         messages::{
             data::{
-                DataCommand, DataResponse, QuotesResponse, RequestCommand, RequestQuotes,
-                SubscribeCommand, SubscribeQuotes,
+                BarsResponse, BookDeltasResponse, BookDepthResponse, BookResponse,
+                CustomDataResponse, DataCommand, DataResponse, ForwardPricesResponse,
+                FundingRatesResponse, InstrumentResponse, InstrumentsResponse, QuotesResponse,
+                RequestCommand, RequestQuotes, SubscribeCommand, SubscribeQuotes, TradesResponse,
             },
             execution::{CancelAllOrders, TradingCommand},
         },
@@ -1728,6 +1732,45 @@ mod tests {
     fn reset_message_bus() {
         get_message_bus().borrow_mut().dispose();
         set_message_bus(Rc::new(RefCell::new(MessageBus::default())));
+    }
+
+    fn assert_response_handler_is_consumed<T>(response: &DataResponse)
+    where
+        T: 'static,
+    {
+        reset_message_bus();
+
+        let correlation_id = *response.correlation_id();
+        let response_kind = response.kind();
+        let calls = Rc::new(Cell::new(0));
+        let handler_calls = calls.clone();
+        register_response_handler(
+            &correlation_id,
+            ShareableMessageHandler::from_typed(move |_response: &T| {
+                handler_calls.set(handler_calls.get() + 1);
+            }),
+        );
+
+        send_response(&correlation_id, response);
+        send_response(&correlation_id, response);
+
+        assert_eq!(
+            calls.get(),
+            1,
+            "{response_kind} response handler must only run once",
+        );
+        assert!(
+            get_message_bus()
+                .borrow()
+                .get_response_handler(&correlation_id)
+                .is_none(),
+            "{response_kind} response handler must be removed after dispatch",
+        );
+        assert_eq!(
+            get_message_bus().borrow().res_count(),
+            2,
+            "{response_kind} duplicate responses must still increment the response count",
+        );
     }
 
     #[rstest]
@@ -2637,6 +2680,46 @@ mod tests {
         reset_message_bus();
     }
 
+    #[rstest]
+    fn republish_external_message_rejects_invalid_topic_and_processes_next_message() {
+        let quote = QuoteTick::default();
+        let payload = serde_json::to_vec(&quote).unwrap();
+        let invalid_message = BusMessage::with_str_topic(
+            "data.quotes.AUDUSD.SIM*",
+            BusPayloadType::Custom(Ustr::from("UnregisteredCustomData")),
+            Bytes::from(payload.clone()),
+            SerializationEncoding::Json,
+        );
+        let valid_message = BusMessage::with_str_topic(
+            "data.quotes.AUDUSD.SIM",
+            BusPayloadType::QuoteTick,
+            Bytes::from(payload),
+            SerializationEncoding::Json,
+        );
+        let received = Rc::new(RefCell::new(Vec::<QuoteTick>::new()));
+        let received_handler = received.clone();
+        subscribe_quotes(
+            "data.quotes.*".into(),
+            TypedHandler::from(move |quote: &QuoteTick| {
+                received_handler.borrow_mut().push(*quote);
+            }),
+            None,
+        );
+        get_message_bus()
+            .borrow_mut()
+            .add_streaming_type(BusPayloadType::QuoteTick);
+
+        let error = republish_external_message(&invalid_message).unwrap_err();
+        republish_external_message(&valid_message).unwrap();
+
+        assert_eq!(
+            format!("{error:#}"),
+            "invalid external message topic: Topic `value` contained invalid characters, was data.quotes.AUDUSD.SIM*"
+        );
+        assert_eq!(*received.borrow(), vec![quote]);
+        reset_message_bus();
+    }
+
     #[cfg(feature = "sbe")]
     #[rstest]
     fn publish_quote_sbe_forwards_decodable_payload_to_external_egress() {
@@ -3267,6 +3350,223 @@ mod tests {
     }
 
     #[rstest]
+    fn test_send_response_consumes_handler_for_all_variants() {
+        let client_id = ClientId::new("SIM");
+        let instrument = audusd_sim();
+        let instrument_id = instrument.id;
+        let venue = Venue::new("SIM");
+        let bar_type = BarType::from("AUD/USD.SIM-1-MINUTE-LAST-EXTERNAL");
+
+        let correlation_id = UUID4::new();
+        assert_response_handler_is_consumed::<CustomDataResponse>(&DataResponse::Data(
+            CustomDataResponse::new(
+                correlation_id,
+                client_id,
+                Some(venue),
+                DataType::new("TestData", None, None),
+                Vec::<u8>::new(),
+                None,
+                None,
+                UnixNanos::default(),
+                None,
+            ),
+        ));
+
+        let correlation_id = UUID4::new();
+        assert_response_handler_is_consumed::<InstrumentResponse>(&DataResponse::Instrument(
+            Box::new(InstrumentResponse::new(
+                correlation_id,
+                client_id,
+                instrument_id,
+                InstrumentAny::CurrencyPair(instrument),
+                None,
+                None,
+                UnixNanos::default(),
+                None,
+            )),
+        ));
+
+        let correlation_id = UUID4::new();
+        assert_response_handler_is_consumed::<InstrumentsResponse>(&DataResponse::Instruments(
+            InstrumentsResponse::new(
+                correlation_id,
+                client_id,
+                venue,
+                Vec::new(),
+                None,
+                None,
+                UnixNanos::default(),
+                None,
+            ),
+        ));
+
+        let correlation_id = UUID4::new();
+        assert_response_handler_is_consumed::<BookResponse>(&DataResponse::Book(
+            BookResponse::new(
+                correlation_id,
+                client_id,
+                instrument_id,
+                OrderBook::new(instrument_id, BookType::L2_MBP),
+                None,
+                None,
+                UnixNanos::default(),
+                None,
+            ),
+        ));
+
+        let correlation_id = UUID4::new();
+        assert_response_handler_is_consumed::<BookDeltasResponse>(&DataResponse::BookDeltas(
+            BookDeltasResponse::new(
+                correlation_id,
+                client_id,
+                instrument_id,
+                Vec::new(),
+                None,
+                None,
+                UnixNanos::default(),
+                None,
+            ),
+        ));
+
+        let correlation_id = UUID4::new();
+        assert_response_handler_is_consumed::<BookDepthResponse>(&DataResponse::BookDepth(
+            BookDepthResponse::new(
+                correlation_id,
+                client_id,
+                instrument_id,
+                Vec::new(),
+                None,
+                None,
+                UnixNanos::default(),
+                None,
+            ),
+        ));
+
+        let correlation_id = UUID4::new();
+        assert_response_handler_is_consumed::<QuotesResponse>(&DataResponse::Quotes(
+            QuotesResponse::new(
+                correlation_id,
+                client_id,
+                instrument_id,
+                Vec::new(),
+                None,
+                None,
+                UnixNanos::default(),
+                None,
+            ),
+        ));
+
+        let correlation_id = UUID4::new();
+        assert_response_handler_is_consumed::<TradesResponse>(&DataResponse::Trades(
+            TradesResponse::new(
+                correlation_id,
+                client_id,
+                instrument_id,
+                Vec::new(),
+                None,
+                None,
+                UnixNanos::default(),
+                None,
+            ),
+        ));
+
+        let correlation_id = UUID4::new();
+        assert_response_handler_is_consumed::<FundingRatesResponse>(&DataResponse::FundingRates(
+            FundingRatesResponse::new(
+                correlation_id,
+                client_id,
+                instrument_id,
+                Vec::new(),
+                None,
+                None,
+                UnixNanos::default(),
+                None,
+            ),
+        ));
+
+        let correlation_id = UUID4::new();
+        assert_response_handler_is_consumed::<ForwardPricesResponse>(&DataResponse::ForwardPrices(
+            ForwardPricesResponse::new(
+                correlation_id,
+                client_id,
+                venue,
+                Vec::new(),
+                UnixNanos::default(),
+                None,
+            ),
+        ));
+
+        let correlation_id = UUID4::new();
+        assert_response_handler_is_consumed::<BarsResponse>(&DataResponse::Bars(
+            BarsResponse::new(
+                correlation_id,
+                client_id,
+                bar_type,
+                Vec::new(),
+                None,
+                None,
+                UnixNanos::default(),
+                None,
+            ),
+        ));
+    }
+
+    #[rstest]
+    fn test_send_response_allows_reentrant_same_correlation_registration() {
+        reset_message_bus();
+
+        let correlation_id = UUID4::new();
+        let first_calls = Rc::new(Cell::new(0));
+        let second_calls = Rc::new(Cell::new(0));
+        let first_handler_calls = first_calls.clone();
+        let second_handler_calls = second_calls.clone();
+        register_response_handler(
+            &correlation_id,
+            ShareableMessageHandler::from_typed(move |_response: &QuotesResponse| {
+                first_handler_calls.set(first_handler_calls.get() + 1);
+                let second_handler_calls = second_handler_calls.clone();
+                register_response_handler(
+                    &correlation_id,
+                    ShareableMessageHandler::from_typed(move |_response: &QuotesResponse| {
+                        second_handler_calls.set(second_handler_calls.get() + 1);
+                    }),
+                );
+            }),
+        );
+
+        let response = DataResponse::Quotes(QuotesResponse::new(
+            correlation_id,
+            ClientId::new("SIM"),
+            InstrumentId::from("TEST.VENUE"),
+            Vec::new(),
+            None,
+            None,
+            UnixNanos::default(),
+            None,
+        ));
+
+        send_response(&correlation_id, &response);
+        assert_eq!(first_calls.get(), 1);
+        assert_eq!(second_calls.get(), 0);
+        assert!(
+            get_message_bus()
+                .borrow()
+                .get_response_handler(&correlation_id)
+                .is_some(),
+        );
+
+        send_response(&correlation_id, &response);
+        assert_eq!(first_calls.get(), 1);
+        assert_eq!(second_calls.get(), 1);
+        assert!(
+            get_message_bus()
+                .borrow()
+                .get_response_handler(&correlation_id)
+                .is_none(),
+        );
+    }
+
+    #[rstest]
     fn test_send_execution_report_allows_reentrant_topic_access() {
         use nautilus_model::{
             identifiers::{AccountId, ClientId, Venue},
@@ -3710,17 +4010,20 @@ mod tests {
 
     #[rstest]
     fn set_bus_tap_then_send_response_invokes_tap() {
-        let _msgbus = get_message_bus();
+        reset_message_bus();
+        clear_bus_tap();
+        let msgbus = get_message_bus();
+        let initial_response_count = msgbus.borrow().res_count();
         let tap = Rc::new(RecordingTap::default());
         set_bus_tap(tap.clone());
 
         let correlation_id = UUID4::new();
-        let handler_called = Rc::new(RefCell::new(false));
-        let handler_called_clone = handler_called.clone();
+        let handler_calls = Rc::new(Cell::new(0));
+        let handler_calls_clone = handler_calls.clone();
         register_response_handler(
             &correlation_id,
             ShareableMessageHandler::from_typed(move |_resp: &QuotesResponse| {
-                *handler_called_clone.borrow_mut() = true;
+                handler_calls_clone.set(handler_calls_clone.get() + 1);
             }),
         );
 
@@ -3735,11 +4038,22 @@ mod tests {
             params: None,
         });
         send_response(&correlation_id, &response);
+        send_response(&correlation_id, &response);
 
         clear_bus_tap();
 
-        assert!(*handler_called.borrow());
-        assert_eq!(tap.response_correlation_ids(), vec![correlation_id]);
+        assert_eq!(handler_calls.get(), 1);
+        assert_eq!(
+            tap.response_correlation_ids(),
+            vec![correlation_id, correlation_id],
+        );
+        assert_eq!(msgbus.borrow().res_count(), initial_response_count + 2);
+        assert!(
+            msgbus
+                .borrow()
+                .get_response_handler(&correlation_id)
+                .is_none(),
+        );
     }
 
     #[rstest]

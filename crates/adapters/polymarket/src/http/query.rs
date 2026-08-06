@@ -17,6 +17,7 @@
 
 use ahash::{AHashMap, AHashSet};
 use derive_builder::Builder;
+use jiff::{Timestamp, civil::Date, tz::Offset};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -62,7 +63,7 @@ pub struct GetTradesParams {
     pub next_cursor: Option<String>,
 }
 
-/// Query parameters for `GET /balance-allowance`.
+/// Query parameters for `GET /balance-allowance` and `GET /balance-allowance/update`.
 #[derive(Clone, Debug, Default, Serialize, Builder)]
 #[builder(setter(into, strip_option), default)]
 pub struct GetBalanceAllowanceParams {
@@ -116,12 +117,19 @@ pub struct OrderResponse {
 ///
 /// All endpoints return the same format:
 /// `{ "canceled": ["0x..."], "not_canceled": {"0x...": "reason"} }`
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct CancelResponse {
     #[serde(default)]
     pub canceled: Vec<String>,
     #[serde(default)]
     pub not_canceled: AHashMap<String, Option<String>>,
+}
+
+impl CancelResponse {
+    pub(crate) fn merge(&mut self, mut response: Self) {
+        self.canceled.append(&mut response.canceled);
+        self.not_canceled.extend(response.not_canceled);
+    }
 }
 
 /// Type alias for backwards compatibility.
@@ -481,22 +489,28 @@ fn validate_date_value(value: Option<&str>, name: &str) -> Result<(), String> {
     parse_date_value(value, name).map(|_| ())
 }
 
-fn parse_date_value(
-    value: Option<&str>,
-    name: &str,
-) -> Result<Option<chrono::DateTime<chrono::FixedOffset>>, String> {
+fn parse_date_value(value: Option<&str>, name: &str) -> Result<Option<Timestamp>, String> {
     value
         .map(|value| {
-            chrono::DateTime::parse_from_rfc3339(value)
-                .or_else(|_| {
-                    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").map(|date| {
-                        date.and_hms_opt(0, 0, 0)
-                            .expect("midnight is a valid time")
-                            .and_utc()
-                            .fixed_offset()
-                    })
-                })
-                .map_err(|_| format!("{name} must be an ISO 8601 date or RFC 3339 date-time"))
+            if value.as_bytes().get(10) == Some(&b'T') {
+                return value
+                    .parse::<Timestamp>()
+                    .map_err(|_| format!("{name} must be an ISO 8601 date or RFC 3339 date-time"));
+            }
+
+            if value.len() == 10
+                && value.as_bytes().get(4) == Some(&b'-')
+                && value.as_bytes().get(7) == Some(&b'-')
+            {
+                return value
+                    .parse::<Date>()
+                    .and_then(|date| Offset::UTC.to_timestamp(date.at(0, 0, 0, 0)))
+                    .map_err(|_| format!("{name} must be an ISO 8601 date or RFC 3339 date-time"));
+            }
+
+            Err(format!(
+                "{name} must be an ISO 8601 date or RFC 3339 date-time"
+            ))
         })
         .transpose()
 }
@@ -659,6 +673,36 @@ mod tests {
         assert_eq!(resp.not_canceled.len(), 1);
         let reason = resp.not_canceled.values().next().and_then(|v| v.as_deref());
         assert_eq!(reason, Some("already canceled or matched"));
+    }
+
+    #[rstest]
+    fn test_cancel_response_merge_preserves_canceled_and_not_canceled_results() {
+        let mut merged = CancelResponse {
+            canceled: vec!["order-1".to_string()],
+            not_canceled: AHashMap::from_iter([(
+                "order-2".to_string(),
+                Some("already canceled".to_string()),
+            )]),
+        };
+        merged.merge(CancelResponse {
+            canceled: vec!["order-3".to_string()],
+            not_canceled: AHashMap::from_iter([(
+                "order-4".to_string(),
+                Some("order not found".to_string()),
+            )]),
+        });
+
+        assert_eq!(
+            merged.canceled,
+            vec!["order-1".to_string(), "order-3".to_string()]
+        );
+        assert_eq!(
+            merged.not_canceled,
+            AHashMap::from_iter([
+                ("order-2".to_string(), Some("already canceled".to_string())),
+                ("order-4".to_string(), Some("order not found".to_string())),
+            ])
+        );
     }
 
     #[rstest]

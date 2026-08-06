@@ -22,6 +22,7 @@ pub use nautilus_core::serialization::{
     deserialize_decimal_or_zero, deserialize_optional_decimal_or_zero,
     deserialize_optional_decimal_str, deserialize_string_to_u8,
 };
+use serde::{Deserialize, de::Error};
 
 /// Serde helper for Bybit `ON`/`OFF` string fields that represent booleans.
 ///
@@ -75,6 +76,27 @@ pub mod bool_or_int {
                 "expected bool or 0/1, received {n}"
             ))),
         }
+    }
+}
+
+/// Deserializes an `i32` from either a JSON integer or base-10 integer string.
+///
+/// Bybit order responses can encode `smpGroup` in both forms.
+pub(crate) fn deserialize_i32_or_string<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<i32, D::Error> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum I32OrString {
+        Int(i32),
+        String(String),
+    }
+
+    match I32OrString::deserialize(d)? {
+        I32OrString::Int(value) => Ok(value),
+        I32OrString::String(value) => value
+            .parse()
+            .map_err(|e| D::Error::custom(format!("expected i32, received {value:?}: {e}"))),
     }
 }
 
@@ -911,11 +933,7 @@ pub fn parse_kline_bar(
     let mut ts_event = parse_millis_timestamp(&kline.start, "kline.start")?;
 
     if timestamp_on_close {
-        let interval_ns = bar_type
-            .spec()
-            .timedelta()
-            .num_nanoseconds()
-            .context("bar specification produced non-integer interval")?;
+        let interval_ns = bar_type.spec().timedelta().as_nanos();
         let interval_ns = u64::try_from(interval_ns)
             .context("bar interval overflowed the u64 range for nanoseconds")?;
         let updated = ts_event
@@ -1475,9 +1493,9 @@ pub fn parse_order_status_report(
         && avg_price != "0"
     {
         let avg_px = avg_price
-            .parse::<f64>()
-            .with_context(|| format!("Failed to parse avg_price='{avg_price}' as f64"))?;
-        report = report.with_avg_px(avg_px)?;
+            .parse::<Decimal>()
+            .with_context(|| format!("Failed to parse avg_price='{avg_price}' as Decimal"))?;
+        report = report.with_avg_px(avg_px);
     }
 
     if !order.trigger_price.is_empty() && order.trigger_price != "0" {
@@ -1887,7 +1905,10 @@ mod tests {
     use super::*;
     use crate::{
         common::{
-            enums::{BybitOrderSide, BybitOrderType, BybitStopOrderType, BybitTriggerDirection},
+            enums::{
+                BybitExecType, BybitOrderSide, BybitOrderType, BybitStopOrderType,
+                BybitTriggerDirection,
+            },
             testing::load_test_json,
         },
         http::models::{
@@ -2874,6 +2895,27 @@ mod tests {
         let report = parse_fill_report(execution, account_id, &instrument, TS).unwrap();
 
         assert_eq!(report.venue_position_id, None);
+    }
+
+    #[rstest]
+    fn test_parse_http_corporate_action_fill_report() {
+        let instrument = linear_instrument();
+        let json = load_test_json("http_get_executions.json");
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value["result"]["list"][0]["execType"] = json!("CorporateAction");
+        let response: BybitTradeHistoryResponse = serde_json::from_value(value).unwrap();
+        let execution = &response.result.list[0];
+        let account_id = AccountId::new("BYBIT-001");
+
+        assert_eq!(execution.exec_type, BybitExecType::CorporateAction);
+        assert!(execution.exec_type.is_exchange_generated());
+
+        let report = parse_fill_report(execution, account_id, &instrument, TS).unwrap();
+
+        assert_eq!(
+            report.venue_order_id,
+            VenueOrderId::from("8c065341-7b52-4ca9-ac2c-37e31ac55c94")
+        );
     }
 
     #[rstest]

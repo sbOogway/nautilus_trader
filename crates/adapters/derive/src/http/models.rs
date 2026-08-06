@@ -547,14 +547,110 @@ pub struct DeriveOrderResult {
 /// Result envelope returned by `private/replace`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeriveReplaceResult {
-    /// Newly accepted replacement order.
-    pub order: DeriveOrder,
+    /// Newly accepted replacement order, absent when cancellation succeeded but creation failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<DeriveOrder>,
     /// Cancelled stale order, omitted by some responses and mocks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled_order: Option<DeriveOrder>,
+    /// Replacement creation error after the stale order was cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_order_error: Option<JsonRpcError>,
 }
 
-/// Empty result returned by state-changing cancel endpoints.
+/// Confirmed outcome returned by `private/replace`.
+#[derive(Clone, Debug)]
+pub enum DeriveReplaceOutcome {
+    /// The stale order was cancelled and the replacement was accepted.
+    Replaced(DeriveOrder),
+    /// The stale order was cancelled but replacement creation failed.
+    Canceled {
+        /// Cancelled stale order returned by the venue.
+        cancelled_order: DeriveOrder,
+        /// Structured error returned by replacement creation.
+        create_order_error: JsonRpcError,
+    },
+}
+
+impl DeriveReplaceResult {
+    /// Validates the response shape and cancellation identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for contradictory fields, an unexpected cancellation record, or an
+    /// invalid replacement state.
+    pub(crate) fn into_outcome(
+        self,
+        expected_cancel_order_id: &str,
+        expected_replacement_label: &str,
+    ) -> Result<DeriveReplaceOutcome, String> {
+        let validate_cancelled_order = |order: &DeriveOrder| {
+            if order.order_id != expected_cancel_order_id {
+                return Err(format!(
+                    "private/replace cancelled order {} did not match requested order {expected_cancel_order_id}",
+                    order.order_id,
+                ));
+            }
+
+            if order.order_status != DeriveOrderStatus::Cancelled {
+                return Err(format!(
+                    "private/replace cancellation record for {expected_cancel_order_id} had status {}",
+                    order.order_status,
+                ));
+            }
+            Ok(())
+        };
+
+        match (self.order, self.cancelled_order, self.create_order_error) {
+            (Some(order), cancelled_order, None) => {
+                if order.order_id == expected_cancel_order_id {
+                    return Err(format!(
+                        "private/replace returned the cancelled order {expected_cancel_order_id} as its replacement",
+                    ));
+                }
+
+                if !matches!(
+                    order.order_status,
+                    DeriveOrderStatus::Open | DeriveOrderStatus::Filled
+                ) {
+                    return Err(format!(
+                        "private/replace replacement {} had status {}",
+                        order.order_id, order.order_status,
+                    ));
+                }
+
+                if order.label.as_str() != expected_replacement_label {
+                    return Err(format!(
+                        "private/replace replacement {} had label {}, expected {expected_replacement_label}",
+                        order.order_id, order.label,
+                    ));
+                }
+
+                if let Some(cancelled_order) = cancelled_order.as_ref() {
+                    validate_cancelled_order(cancelled_order)?;
+                }
+                Ok(DeriveReplaceOutcome::Replaced(order))
+            }
+            (None, Some(cancelled_order), Some(create_order_error)) => {
+                validate_cancelled_order(&cancelled_order)?;
+                Ok(DeriveReplaceOutcome::Canceled {
+                    cancelled_order,
+                    create_order_error,
+                })
+            }
+            _ => Err("private/replace returned an inconsistent result".to_string()),
+        }
+    }
+}
+
+/// Result returned by `private/cancel_by_label`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeriveCancelByLabelResult {
+    /// Number of open orders cancelled by the venue.
+    pub cancelled_orders: i64,
+}
+
+/// Empty result returned by state-changing endpoints without a typed payload.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct DeriveEmptyResult {}
 
@@ -1096,6 +1192,78 @@ mod tests {
     }
 
     #[rstest]
+    fn test_replace_result_decodes_canceled_without_replacement() {
+        let mut cancelled_order = load_json("perps/http_order_eth_partially_filled.json");
+        cancelled_order["order_id"] = json!("old-order");
+        cancelled_order["order_status"] = json!("cancelled");
+        let result: DeriveReplaceResult = serde_json::from_value(json!({
+            "order": null,
+            "cancelled_order": cancelled_order,
+            "create_order_error": {
+                "code": 10001,
+                "message": "insufficient margin",
+            },
+        }))
+        .unwrap();
+
+        let outcome = result
+            .into_outcome("old-order", "replacement-label")
+            .unwrap();
+        let DeriveReplaceOutcome::Canceled {
+            cancelled_order,
+            create_order_error,
+        } = outcome
+        else {
+            panic!("expected canceled outcome");
+        };
+        assert_eq!(cancelled_order.order_id, "old-order");
+        assert_eq!(cancelled_order.order_status, DeriveOrderStatus::Cancelled);
+        assert_eq!(create_order_error.code, 10001);
+        assert_eq!(create_order_error.message, "insufficient margin");
+        assert!(create_order_error.data.is_none());
+    }
+
+    #[rstest]
+    fn test_replace_result_rejects_non_cancelled_partial_record() {
+        let mut cancelled_order = load_json("perps/http_order_eth_partially_filled.json");
+        cancelled_order["order_id"] = json!("old-order");
+        cancelled_order["order_status"] = json!("open");
+        let result: DeriveReplaceResult = serde_json::from_value(json!({
+            "order": null,
+            "cancelled_order": cancelled_order,
+            "create_order_error": {
+                "code": 10001,
+                "message": "insufficient margin",
+            },
+        }))
+        .unwrap();
+
+        let error = result
+            .into_outcome("old-order", "replacement-label")
+            .unwrap_err();
+        assert!(error.contains("had status open"));
+    }
+
+    #[rstest]
+    fn test_replace_result_rejects_mismatched_replacement_label() {
+        let mut replacement_order = load_json("perps/http_order_eth_partially_filled.json");
+        replacement_order["order_id"] = json!("new-order");
+        replacement_order["order_status"] = json!("open");
+        replacement_order["label"] = json!("wrong-label");
+        let result: DeriveReplaceResult = serde_json::from_value(json!({
+            "order": replacement_order,
+            "cancelled_order": null,
+            "create_order_error": null,
+        }))
+        .unwrap();
+
+        let error = result
+            .into_outcome("old-order", "expected-label")
+            .unwrap_err();
+        assert!(error.contains("had label wrong-label, expected expected-label"));
+    }
+
+    #[rstest]
     fn test_position_decodes_perp_with_optional_leverage() {
         // Distinct decimal values per field so a struct-field swap surfaces.
         let body = load_json("perps/http_position_eth.json");
@@ -1366,6 +1534,19 @@ mod tests {
         assert_eq!(object, DeriveEmptyResult {});
         assert_eq!(ok_string, DeriveEmptyResult {});
         assert_eq!(null_envelope.result, Some(DeriveEmptyResult {}));
+    }
+
+    #[rstest]
+    #[case("common/ws_cancel_by_label_zero.json", 0)]
+    #[case("common/ws_cancel_by_label_nonzero.json", 2)]
+    fn test_cancel_order_by_label_result_decodes_count(
+        #[case] filename: &str,
+        #[case] expected: i64,
+    ) {
+        let response: JsonRpcResponse<DeriveCancelByLabelResult> =
+            serde_json::from_value(load_json(filename)).expect("response decodes");
+
+        assert_eq!(response.result.unwrap().cancelled_orders, expected);
     }
 
     #[rstest]

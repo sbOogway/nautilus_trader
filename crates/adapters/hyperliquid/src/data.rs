@@ -24,11 +24,11 @@ use std::{
 
 use ahash::{AHashMap, AHashSet};
 use anyhow::Context;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use nautilus_common::{
     cache::InstrumentLookupError,
     clients::DataClient,
-    live::{runner::get_data_event_sender, runtime::get_runtime},
+    live::{runner::get_data_event_sender, runtime::get_runtime, task::TaskHandles},
     messages::{
         DataEvent,
         data::{
@@ -50,10 +50,7 @@ use nautilus_core::{
     time::{AtomicTime, get_atomic_clock_realtime},
 };
 use nautilus_model::{
-    data::{
-        Bar, BarType, BookOrder, CustomData, Data, DataType, FundingRateUpdate,
-        OrderBookDeltas_API, TradeTick,
-    },
+    data::{Bar, BarType, BookOrder, CustomData, Data, DataType, FundingRateUpdate, TradeTick},
     enums::{BarAggregation, BookType, OrderSide},
     identifiers::{ClientId, InstrumentId, Venue},
     instruments::{Instrument, InstrumentAny},
@@ -92,7 +89,7 @@ pub struct HyperliquidDataClient {
     cancellation_token: CancellationToken,
     ws_stream_handle: Option<JoinHandle<()>>,
     stream_health_handle: Option<JoinHandle<()>>,
-    pending_tasks: Mutex<Vec<JoinHandle<()>>>,
+    pending_tasks: TaskHandles,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     instruments: Arc<AtomicMap<InstrumentId, InstrumentAny>>,
     coin_to_instrument_id: Arc<AtomicMap<Ustr, InstrumentId>>,
@@ -173,7 +170,7 @@ impl HyperliquidDataClient {
             cancellation_token: CancellationToken::new(),
             ws_stream_handle: None,
             stream_health_handle: None,
-            pending_tasks: Mutex::new(Vec::new()),
+            pending_tasks: TaskHandles::default(),
             data_sender,
             instruments: Arc::new(AtomicMap::new()),
             coin_to_instrument_id: Arc::new(AtomicMap::new()),
@@ -192,16 +189,11 @@ impl HyperliquidDataClient {
             }
         });
 
-        let mut tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
-        tasks.retain(|handle| !handle.is_finished());
-        tasks.push(handle);
+        self.pending_tasks.push(handle);
     }
 
     fn abort_pending_tasks(&self) {
-        let mut tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
-        for handle in tasks.drain(..) {
-            handle.abort();
-        }
+        self.pending_tasks.abort_all();
     }
 
     fn abort_stream_health_monitor(&mut self) {
@@ -424,7 +416,7 @@ impl HyperliquidDataClient {
                                 NautilusWsMessage::Deltas(deltas) => {
                                     if let Err(e) = data_sender
                                         .send(DataEvent::Data(Data::Deltas(
-                                            OrderBookDeltas_API::new(deltas),
+                                            Box::new(deltas),
                                         )))
                                     {
                                         log::error!("Failed to send order book deltas: {e}");
@@ -1333,15 +1325,15 @@ impl DataClient for HyperliquidDataClient {
         let start_nanos = datetime_to_unix_nanos(start_dt);
         let end_nanos = datetime_to_unix_nanos(end_dt);
 
-        let now_ms = Utc::now().timestamp_millis() as u64;
+        let now_ms = Timestamp::now().as_millisecond() as u64;
 
         // Hyperliquid requires a startTime; default to a 7-day lookback when none given
         let default_lookback_ms: u64 = 7 * 86_400_000;
         let start_ms = match start_dt {
-            Some(dt) => dt.timestamp_millis().max(0) as u64,
+            Some(dt) => dt.as_millisecond().max(0) as u64,
             None => now_ms.saturating_sub(default_lookback_ms),
         };
-        let end_ms = end_dt.map(|dt| dt.timestamp_millis().max(0) as u64);
+        let end_ms = end_dt.map(|dt| dt.as_millisecond().max(0) as u64);
 
         self.spawn_task("request_funding_rates", async move {
             let entries = http
@@ -1974,8 +1966,8 @@ pub(crate) fn candle_to_bar(
 async fn request_bars_from_http(
     http_client: HyperliquidHttpClient,
     bar_type: BarType,
-    start: Option<DateTime<Utc>>,
-    end: Option<DateTime<Utc>>,
+    start: Option<Timestamp>,
+    end: Option<Timestamp>,
     limit: Option<u32>,
     instruments: Arc<AtomicMap<InstrumentId, InstrumentAny>>,
 ) -> anyhow::Result<Vec<Bar>> {
@@ -1995,10 +1987,10 @@ async fn request_bars_from_http(
     let interval = bar_type_to_interval(&bar_type)?;
 
     // Hyperliquid uses millisecond timestamps
-    let now = Utc::now();
-    let end_time = end.unwrap_or(now).timestamp_millis() as u64;
+    let now = Timestamp::now();
+    let end_time = end.unwrap_or(now).as_millisecond() as u64;
     let start_time = if let Some(start) = start {
-        start.timestamp_millis() as u64
+        start.as_millisecond() as u64
     } else {
         // Default to 1000 bars before end_time
         let spec = bar_type.spec();
@@ -2360,7 +2352,7 @@ mod tests {
     fn test_stream_health_receive_resets_recovery_state() {
         let mut monitor =
             MarketDataStreamHealthMonitor::new(Duration::from_secs(5), Duration::from_secs(10))
-                .with_recovery(Duration::from_secs(10), 2);
+                .with_recovery(Duration::from_secs(10), 1);
         let instrument_id = btc_perp_id();
         let start = Instant::now();
 
@@ -2393,10 +2385,6 @@ mod tests {
         );
         assert_eq!(
             check_at(&mut monitor, start, 41)[0].action,
-            StaleStreamAction::Resubscribe,
-        );
-        assert_eq!(
-            check_at(&mut monitor, start, 51)[0].action,
             StaleStreamAction::Reconnect,
         );
     }

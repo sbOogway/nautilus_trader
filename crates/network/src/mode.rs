@@ -13,15 +13,46 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Connection mode enumeration for socket clients.
+//! Shared connection state for socket clients.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU8, Ordering},
+};
 
 use strum::{AsRefStr, Display, EnumString};
 
-/// Connection mode for a socket client.
+/// Irreversible validity token for a single connection's read task.
+#[derive(Clone, Debug)]
+pub(crate) struct ReadSessionFence {
+    valid: Arc<AtomicBool>,
+}
+
+impl ReadSessionFence {
+    /// Creates a valid fence for a newly spawned read task.
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self {
+            valid: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    /// Invalidates the associated read session.
+    pub(crate) fn invalidate(&self) {
+        self.valid.store(false, Ordering::SeqCst);
+    }
+
+    /// Returns whether the associated read session is still current.
+    #[must_use]
+    pub(crate) fn is_valid(&self) -> bool {
+        self.valid.load(Ordering::SeqCst)
+    }
+}
+
+/// The lifecycle state of a socket client.
 ///
-/// The client can be in one of four modes (managed via an atomic flag).
+/// Clients store the active, reconnecting, disconnecting, or closed state in an atomic flag so
+/// transport tasks can coordinate lifecycle transitions across threads.
 #[derive(Clone, Copy, Debug, Default, Display, Hash, PartialEq, Eq, AsRefStr, EnumString)]
 #[repr(u8)]
 #[strum(serialize_all = "UPPERCASE")]
@@ -42,7 +73,7 @@ pub enum ConnectionMode {
 }
 
 impl ConnectionMode {
-    /// Convert a u8 to [`ConnectionMode`], useful when loading from an `AtomicU8`.
+    /// Converts a `u8` loaded from an [`AtomicU8`] into a [`ConnectionMode`].
     ///
     /// # Panics
     ///
@@ -59,7 +90,7 @@ impl ConnectionMode {
         }
     }
 
-    /// Load a [`ConnectionMode`] from an [`AtomicU8`] using sequential consistency ordering.
+    /// Loads a [`ConnectionMode`] from an [`AtomicU8`] using sequential consistency.
     #[inline]
     #[must_use]
     pub fn from_atomic(value: &AtomicU8) -> Self {
@@ -96,7 +127,7 @@ impl ConnectionMode {
             .is_ok()
     }
 
-    /// Convert a [`ConnectionMode`] to a u8, useful when storing to an `AtomicU8`.
+    /// Converts a [`ConnectionMode`] to its `u8` representation.
     #[inline]
     #[must_use]
     pub const fn as_u8(self) -> u8 {

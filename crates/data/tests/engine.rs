@@ -81,13 +81,15 @@ use nautilus_model::defi::{
     data::block::BlockPosition,
     pool_analysis::snapshot::{PoolAnalytics, PoolSnapshot, PoolState},
 };
+#[cfg(feature = "defi")]
+use nautilus_model::enums::CurrencyType;
 #[cfg(feature = "streaming")]
 use nautilus_model::enums::{BookAction, OrderSide};
 use nautilus_model::{
     data::{
         Bar, BarType, BookOrder, CustomData, DEPTH10_LEN, Data, DataType, FundingRateUpdate,
         IndexPriceUpdate, InstrumentClose, InstrumentStatus, MarkPriceUpdate, OrderBookDelta,
-        OrderBookDeltas, OrderBookDeltas_API, OrderBookDepth10, QuoteTick, TradeTick,
+        OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
         greeks::OptionGreekValues,
         option_chain::{OptionChainSlice, OptionGreeks, StrikeRange},
         stubs::{
@@ -115,6 +117,8 @@ use nautilus_persistence::test_data::RustTestCustomData;
 #[cfg(feature = "streaming")]
 use nautilus_serialization::ensure_custom_data_registered;
 use rstest::*;
+#[cfg(feature = "defi")]
+use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use ustr::Ustr;
 
@@ -2748,16 +2752,8 @@ fn test_continuous_future_request_walks_segments_and_applies_adjustments(
 
     let first_child = recorded_trades_request(&recorder, 0);
     assert_eq!(first_child.instrument_id, pre_instrument_id);
-    assert_eq!(
-        first_child
-            .start
-            .map(|dt| dt.timestamp_nanos_opt().unwrap()),
-        Some(0)
-    );
-    assert_eq!(
-        first_child.end.map(|dt| dt.timestamp_nanos_opt().unwrap()),
-        Some(9)
-    );
+    assert_eq!(first_child.start.map(|dt| dt.as_nanosecond()), Some(0));
+    assert_eq!(first_child.end.map(|dt| dt.as_nanosecond()), Some(9));
     let first_child_params_ref = first_child.params.as_ref().unwrap();
     let parent_id_str = parent_id.to_string();
     assert_eq!(
@@ -2785,16 +2781,8 @@ fn test_continuous_future_request_walks_segments_and_applies_adjustments(
 
     let second_child = recorded_trades_request(&recorder, 1);
     assert_eq!(second_child.instrument_id, post_instrument_id);
-    assert_eq!(
-        second_child
-            .start
-            .map(|dt| dt.timestamp_nanos_opt().unwrap()),
-        Some(10)
-    );
-    assert_eq!(
-        second_child.end.map(|dt| dt.timestamp_nanos_opt().unwrap()),
-        Some(20)
-    );
+    assert_eq!(second_child.start.map(|dt| dt.as_nanosecond()), Some(10));
+    assert_eq!(second_child.end.map(|dt| dt.as_nanosecond()), Some(20));
     let mut second_response_params = second_child.params.clone().unwrap();
     second_response_params.insert("data_count".to_string(), json!(8));
     data_engine.response(DataResponse::Trades(TradesResponse::new(
@@ -5578,8 +5566,8 @@ fn test_emit_quotes_from_book_publishes_on_delta_apply(
     let quote_topic = switchboard::get_quotes_topic(instrument_id);
     msgbus::subscribe_quotes(quote_topic.into(), handler, None);
 
-    let deltas_api = OrderBookDeltas_API::new(deltas);
-    data_engine.process_data(Data::Deltas(deltas_api.clone()));
+    let deltas = Box::new(deltas);
+    data_engine.process_data(Data::Deltas(deltas.clone()));
 
     assert_eq!(
         saver.get_messages().len(),
@@ -5588,7 +5576,7 @@ fn test_emit_quotes_from_book_publishes_on_delta_apply(
     );
 
     // Same deltas, same top-of-book: idempotent
-    data_engine.process_data(Data::Deltas(deltas_api));
+    data_engine.process_data(Data::Deltas(deltas));
     assert_eq!(saver.get_messages().len(), 1);
 }
 
@@ -9057,8 +9045,7 @@ fn test_process_book_deltas(
 
     data_engine.borrow_mut().execute(cmd);
 
-    // TODO: Using FFI API wrapper temporarily until Cython gone
-    let deltas = OrderBookDeltas_API::new(stub_deltas());
+    let deltas = Box::new(stub_deltas());
     let (handler, saver) = get_typed_message_saving_handler::<OrderBookDeltas>(None);
     let topic = switchboard::get_book_deltas_topic(deltas.instrument_id);
     msgbus::subscribe_book_deltas(topic.into(), handler, None);
@@ -11715,6 +11702,142 @@ fn test_pool_updater_processes_flash_updates_profiler(
 
 #[cfg(feature = "defi")]
 #[rstest]
+fn test_process_defi_pools_publishes_distinct_tradable_instruments(
+    data_engine: Rc<RefCell<DataEngine>>,
+    stub_msgbus: Rc<RefCell<MessageBus>>,
+) {
+    let _ = stub_msgbus;
+    let chain = Arc::new(chains::ARBITRUM.clone());
+    let dex = Arc::new(Dex::new(
+        chains::ARBITRUM.clone(),
+        DexType::UniswapV3,
+        "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+        0,
+        AmmType::CLAMM,
+        "PoolCreated",
+        "Swap",
+        "Mint",
+        "Burn",
+        "Collect",
+    ));
+    let token0 = Token::new(
+        chain.clone(),
+        Address::from([0x11; 20]),
+        "Base token".to_string(),
+        "BASE".to_string(),
+        8,
+    );
+    let token1 = Token::new(
+        chain.clone(),
+        Address::from([0x22; 20]),
+        "Quote token".to_string(),
+        "QUOTE".to_string(),
+        6,
+    );
+    let address_a = Address::from([0xAA; 20]);
+    let address_b = Address::from([0xBB; 20]);
+    let address_invalid = Address::from([0xCC; 20]);
+    let pool_a = Pool::new(
+        chain.clone(),
+        dex.clone(),
+        address_a,
+        PoolIdentifier::from_address(address_a),
+        1,
+        token0.clone(),
+        token1.clone(),
+        Some(500),
+        Some(10),
+        UnixNanos::from(1),
+    );
+    let pool_b = Pool::new(
+        chain.clone(),
+        dex.clone(),
+        address_b,
+        PoolIdentifier::from_address(address_b),
+        2,
+        token0.clone(),
+        token1.clone(),
+        Some(3_000),
+        Some(60),
+        UnixNanos::from(2),
+    );
+    let mut pool_invalid = Pool::new(
+        chain,
+        dex,
+        address_invalid,
+        PoolIdentifier::from_address(address_invalid),
+        3,
+        token0,
+        token1,
+        Some(10_000),
+        Some(200),
+        UnixNanos::from(3),
+    );
+    pool_invalid.token0.symbol.clear();
+    let id_a = pool_a.instrument_id;
+    let id_b = pool_b.instrument_id;
+    let id_invalid = pool_invalid.instrument_id;
+    let expected_invalid = pool_invalid.clone();
+    let venue = id_a.venue;
+    let expected = |pool: &Pool| {
+        InstrumentAny::CurrencyPair(CurrencyPair::new(
+            pool.instrument_id,
+            pool.instrument_id.symbol,
+            Currency::new("BASE", 8, 0, "Base token", CurrencyType::Crypto),
+            Currency::new("QUOTE", 6, 0, "Quote token", CurrencyType::Crypto),
+            6,
+            8,
+            Price::from("0.000001"),
+            Quantity::from("0.00000001"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            pool.fee.map(|fee| Decimal::new(i64::from(fee), 6)),
+            None,
+            None,
+            pool.ts_event,
+            pool.ts_init,
+        ))
+    };
+    let expected_a = expected(&pool_a);
+    let expected_b = expected(&pool_b);
+    let (handler, saving_handler) =
+        msgbus::stubs::get_typed_message_saving_handler::<InstrumentAny>(None);
+    msgbus::subscribe_instruments(switchboard::get_instruments_pattern(venue), handler, None);
+
+    {
+        let mut engine = data_engine.borrow_mut();
+        engine.process_defi_data(DefiData::Pool(pool_a));
+        engine.process_defi_data(DefiData::Pool(pool_b));
+        engine.process_defi_data(DefiData::Pool(pool_invalid));
+    }
+
+    let cache = data_engine.borrow().cache_rc();
+    let cache = cache.borrow();
+    let messages = saving_handler.get_messages();
+    let selected = cache.instrument(&id_b);
+
+    assert_ne!(id_a, id_b);
+    assert_eq!(cache.instrument(&id_a), Some(&expected_a));
+    assert_eq!(selected, Some(&expected_b));
+    assert_eq!(cache.pool(&id_invalid), Some(&expected_invalid));
+    assert_eq!(cache.instrument(&id_invalid), None);
+    assert_eq!(cache.instruments(&venue, None).len(), 2);
+    assert_eq!(messages.len(), 2);
+    assert!(messages.contains(&expected_a));
+    assert!(messages.contains(&expected_b));
+}
+
+#[cfg(feature = "defi")]
+#[rstest]
 fn test_execute_defi_request_pool_snapshot(
     data_engine: Rc<RefCell<DataEngine>>,
     clock: Rc<RefCell<TestClock>>,
@@ -12399,7 +12522,7 @@ fn test_process_book_snapshot_publish(
 
     // Process deltas to populate the order book
     let delta = OrderBookDeltaTestBuilder::new(audusd_sim.id).build();
-    let deltas = OrderBookDeltas_API::new(OrderBookDeltas::new(audusd_sim.id, vec![delta]));
+    let deltas = Box::new(OrderBookDeltas::new(audusd_sim.id, vec![delta]));
     data_engine.borrow_mut().process_data(Data::Deltas(deltas));
 
     // Advance clock past the interval to trigger snapshot timer
@@ -13178,7 +13301,7 @@ fn execute_book_snapshot_unsubscribe(
 
 fn process_book_delta(data_engine: &Rc<RefCell<DataEngine>>, instrument_id: InstrumentId) {
     let delta = OrderBookDeltaTestBuilder::new(instrument_id).build();
-    let deltas = OrderBookDeltas_API::new(OrderBookDeltas::new(instrument_id, vec![delta]));
+    let deltas = Box::new(OrderBookDeltas::new(instrument_id, vec![delta]));
     data_engine.borrow_mut().process_data(Data::Deltas(deltas));
 }
 
@@ -15243,7 +15366,7 @@ fn test_process_pipeline_deltas_publishes_on_pipeline_topic_only(
     msgbus::subscribe_book_deltas(live_topic.into(), live_handler, None);
     msgbus::subscribe_book_deltas(pipeline_topic.into(), pipeline_handler, None);
 
-    data_engine.process_pipeline(Data::Deltas(OrderBookDeltas_API::new(deltas.clone())));
+    data_engine.process_pipeline(Data::Deltas(Box::new(deltas.clone())));
 
     assert!(
         live_saver.get_messages().is_empty(),
@@ -16131,8 +16254,8 @@ fn recorded_time_range_request_funding_rates(
         .collect()
 }
 
-fn datetime_to_unix_nanos_for_test(dt: chrono::DateTime<chrono::Utc>) -> UnixNanos {
-    UnixNanos::from(u64::try_from(dt.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
+fn datetime_to_unix_nanos_for_test(dt: jiff::Timestamp) -> UnixNanos {
+    UnixNanos::from(u64::try_from(dt.as_nanosecond().max(0)).unwrap_or(0))
 }
 
 fn advance_test_clock_to(clock: &Rc<RefCell<dyn Clock>>, ns: u64) {
@@ -16245,15 +16368,11 @@ fn test_time_range_pipeline_issues_one_child_at_a_time(
     assert_eq!(recorded.len(), 1);
     assert_ne!(recorded[0].request_id, parent_id);
     assert_eq!(
-        recorded[0]
-            .start
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[0].start.map(|dt| dt.as_nanosecond()),
         Some(1_000_000_000)
     );
     assert_eq!(
-        recorded[0]
-            .end
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[0].end.map(|dt| dt.as_nanosecond()),
         Some(3_000_000_000)
     );
     assert_eq!(data_engine.time_range_pipeline_count(), 1);
@@ -16273,15 +16392,11 @@ fn test_time_range_pipeline_issues_one_child_at_a_time(
         "second child should be issued only after the first response"
     );
     assert_eq!(
-        recorded[1]
-            .start
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[1].start.map(|dt| dt.as_nanosecond()),
         Some(3_000_000_001)
     );
     assert_eq!(
-        recorded[1]
-            .end
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[1].end.map(|dt| dt.as_nanosecond()),
         Some(5_000_000_000)
     );
 }
@@ -16330,15 +16445,11 @@ fn test_time_range_pipeline_uses_data_count_feedback(
     let recorded = recorded_time_range_request_quotes(&recorder);
     assert_eq!(recorded.len(), 2);
     assert_eq!(
-        recorded[1]
-            .start
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[1].start.map(|dt| dt.as_nanosecond()),
         Some(2_000_000_001)
     );
     assert_eq!(
-        recorded[1]
-            .end
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[1].end.map(|dt| dt.as_nanosecond()),
         Some(5_000_000_000)
     );
 
@@ -16353,15 +16464,11 @@ fn test_time_range_pipeline_uses_data_count_feedback(
     let recorded = recorded_time_range_request_quotes(&recorder);
     assert_eq!(recorded.len(), 3);
     assert_eq!(
-        recorded[2]
-            .start
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[2].start.map(|dt| dt.as_nanosecond()),
         Some(5_000_000_001)
     );
     assert_eq!(
-        recorded[2]
-            .end
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[2].end.map(|dt| dt.as_nanosecond()),
         Some(6_000_000_000)
     );
 }
@@ -16406,13 +16513,10 @@ fn test_time_range_pipeline_point_data_uses_single_point_windows(
 
     let first = recorded_time_range_request_quotes(&recorder)[0].clone();
     assert_eq!(
-        first.start.map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        first.start.map(|dt| dt.as_nanosecond()),
         Some(1_000_000_000)
     );
-    assert_eq!(
-        first.end.map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
-        Some(1_000_000_000)
-    );
+    assert_eq!(first.end.map(|dt| dt.as_nanosecond()), Some(1_000_000_000));
 
     data_engine.response(time_range_quote_response(
         &first,
@@ -16425,15 +16529,11 @@ fn test_time_range_pipeline_point_data_uses_single_point_windows(
     let recorded = recorded_time_range_request_quotes(&recorder);
     assert_eq!(recorded.len(), 2);
     assert_eq!(
-        recorded[1]
-            .start
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[1].start.map(|dt| dt.as_nanosecond()),
         Some(3_000_000_000)
     );
     assert_eq!(
-        recorded[1]
-            .end
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[1].end.map(|dt| dt.as_nanosecond()),
         Some(3_000_000_000)
     );
 
@@ -16448,15 +16548,11 @@ fn test_time_range_pipeline_point_data_uses_single_point_windows(
     let recorded = recorded_time_range_request_quotes(&recorder);
     assert_eq!(recorded.len(), 3);
     assert_eq!(
-        recorded[2]
-            .start
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[2].start.map(|dt| dt.as_nanosecond()),
         Some(5_000_000_000)
     );
     assert_eq!(
-        recorded[2]
-            .end
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[2].end.map(|dt| dt.as_nanosecond()),
         Some(5_000_000_000)
     );
 
@@ -16471,15 +16567,11 @@ fn test_time_range_pipeline_point_data_uses_single_point_windows(
     let recorded = recorded_time_range_request_quotes(&recorder);
     assert_eq!(recorded.len(), 4);
     assert_eq!(
-        recorded[3]
-            .start
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[3].start.map(|dt| dt.as_nanosecond()),
         Some(6_000_000_000)
     );
     assert_eq!(
-        recorded[3]
-            .end
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[3].end.map(|dt| dt.as_nanosecond()),
         Some(6_000_000_000)
     );
 
@@ -16945,15 +17037,11 @@ fn test_time_range_pipeline_child_uses_catalog_client_fanin(
         "next time-range child should be issued after catalog/client fan-in"
     );
     assert_eq!(
-        recorded[1]
-            .start
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[1].start.map(|dt| dt.as_nanosecond()),
         Some(3_000_000_001)
     );
     assert_eq!(
-        recorded[1]
-            .end
-            .map(|dt| dt.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[1].end.map(|dt| dt.as_nanosecond()),
         Some(5_000_000_000)
     );
 
@@ -17464,7 +17552,6 @@ fn test_request_join_two_phase_emits_parent_response(
     stub_msgbus: Rc<RefCell<MessageBus>>,
     client_id: ClientId,
 ) {
-    let _ = stub_msgbus;
     let instrument_id = audusd_sim.id;
     let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
     let cache: Rc<RefCell<Cache>> = Rc::new(RefCell::new(Cache::default()));
@@ -17543,6 +17630,49 @@ fn test_request_join_two_phase_emits_parent_response(
         .copied()
         .expect("joined quote data must reach the cache");
     assert_eq!(cached.ts_init, UnixNanos::from(2_000));
+
+    for request_id in [leg_a, leg_b, join_id] {
+        assert!(
+            stub_msgbus
+                .borrow()
+                .get_response_handler(&request_id)
+                .is_none(),
+            "completed join response handler must be removed for {request_id}",
+        );
+    }
+
+    data_engine.response(leg_quotes_response(
+        leg_a,
+        instrument_id,
+        client_id,
+        vec![pipeline_quote(instrument_id, 3_000)],
+        None,
+        None,
+    ));
+    data_engine.response(leg_quotes_response(
+        leg_b,
+        instrument_id,
+        client_id,
+        vec![pipeline_quote(instrument_id, 4_000)],
+        None,
+        None,
+    ));
+    data_engine.response(leg_quotes_response(
+        join_id,
+        instrument_id,
+        client_id,
+        vec![pipeline_quote(instrument_id, 5_000)],
+        None,
+        None,
+    ));
+
+    assert_eq!(
+        parent_saver.get_messages().len(),
+        1,
+        "late leg and parent responses must not complete the join again",
+    );
+    assert_eq!(leg_a_saver.get_messages().len(), 1);
+    assert_eq!(leg_b_saver.get_messages().len(), 1);
 }
 
 #[rstest]
@@ -17950,7 +18080,6 @@ fn test_reset_clears_pipeline_and_join_state(
     stub_msgbus: Rc<RefCell<MessageBus>>,
     client_id: ClientId,
 ) {
-    let _ = stub_msgbus;
     let instrument_id = audusd_sim.id;
     let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
     let cache: Rc<RefCell<Cache>> = Rc::new(RefCell::new(Cache::default()));
@@ -17979,11 +18108,24 @@ fn test_reset_clears_pipeline_and_join_state(
     let (parent_handler, parent_saver) =
         get_any_saving_handler::<QuotesResponse>(Some(Ustr::from("reset-parent")));
     msgbus::register_response_handler(&join_id, parent_handler);
+    let (leg_b_handler, leg_b_saver) =
+        get_any_saving_handler::<QuotesResponse>(Some(Ustr::from("reset-leg-b")));
+    msgbus::register_response_handler(&leg_b, leg_b_handler);
 
     data_engine.reset();
 
     assert_eq!(data_engine.request_pipeline_count(), 0);
     assert_eq!(data_engine.pending_join_request_count(), 0);
+
+    for request_id in [leg_b, join_id] {
+        assert!(
+            stub_msgbus
+                .borrow()
+                .get_response_handler(&request_id)
+                .is_some(),
+            "data engine reset must not clear message bus response handlers for {request_id}",
+        );
+    }
 
     data_engine.response(leg_quotes_response(
         leg_a,
@@ -18002,9 +18144,37 @@ fn test_reset_clears_pipeline_and_join_state(
         None,
     ));
 
+    assert_eq!(leg_b_saver.get_messages().len(), 1);
+    assert_eq!(leg_b_saver.get_messages()[0].correlation_id, leg_b);
+    assert!(
+        stub_msgbus.borrow().get_response_handler(&leg_b).is_none(),
+        "the first late leg response must consume its handler",
+    );
+
+    data_engine.response(leg_quotes_response(
+        leg_b,
+        instrument_id,
+        client_id,
+        vec![pipeline_quote(instrument_id, 3_000)],
+        None,
+        None,
+    ));
+
+    assert_eq!(
+        leg_b_saver.get_messages().len(),
+        1,
+        "a duplicate late leg response must not invoke the handler again",
+    );
     assert!(
         parent_saver.get_messages().is_empty(),
         "reset must clear pipeline state so no rebuilt parent fires",
+    );
+    assert!(
+        stub_msgbus
+            .borrow()
+            .get_response_handler(&join_id)
+            .is_some(),
+        "reset must not clear unrelated message bus response handlers",
     );
 }
 
@@ -18277,7 +18447,6 @@ fn test_request_join_single_leg_fires_immediately(
     stub_msgbus: Rc<RefCell<MessageBus>>,
     client_id: ClientId,
 ) {
-    let _ = stub_msgbus;
     let instrument_id = audusd_sim.id;
     let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
     let cache: Rc<RefCell<Cache>> = Rc::new(RefCell::new(Cache::default()));
@@ -18332,6 +18501,16 @@ fn test_request_join_single_leg_fires_immediately(
 
     assert_eq!(data_engine.request_pipeline_count(), 0);
     assert_eq!(data_engine.pending_join_request_count(), 0);
+
+    for request_id in [leg, join_id] {
+        assert!(
+            stub_msgbus
+                .borrow()
+                .get_response_handler(&request_id)
+                .is_none(),
+            "completed single-leg join handler must be removed for {request_id}",
+        );
+    }
 }
 
 #[rstest]
@@ -18909,18 +19088,8 @@ fn test_request_quotes_client_only_when_catalog_has_no_data(
 
     let recorded = recorded_request_quotes(&recorder);
     assert_eq!(recorded.len(), 1);
-    assert_eq!(
-        recorded[0]
-            .start
-            .map(|d| d.timestamp_nanos_opt().unwrap_or(0)),
-        Some(1_000)
-    );
-    assert_eq!(
-        recorded[0]
-            .end
-            .map(|d| d.timestamp_nanos_opt().unwrap_or(0)),
-        Some(3_000)
-    );
+    assert_eq!(recorded[0].start.map(|d| d.as_nanosecond()), Some(1_000));
+    assert_eq!(recorded[0].end.map(|d| d.as_nanosecond()), Some(3_000));
     assert_eq!(data_engine.request_pipeline_count(), 1);
 }
 
@@ -18982,12 +19151,8 @@ fn test_request_quotes_catalog_plus_client_split(
         1,
         "expected one client leg for the missing interval"
     );
-    let client_start = recorded[0]
-        .start
-        .map_or(0, |d| d.timestamp_nanos_opt().unwrap_or(0));
-    let client_end = recorded[0]
-        .end
-        .map_or(0, |d| d.timestamp_nanos_opt().unwrap_or(0));
+    let client_start = recorded[0].start.map_or(0, |d| d.as_nanosecond());
+    let client_end = recorded[0].end.map_or(0, |d| d.as_nanosecond());
     assert!(
         client_start > 1_500,
         "client leg should start after the catalog coverage ends (was {client_start})"
@@ -19014,12 +19179,12 @@ fn test_request_quotes_catalog_plus_client_split(
         instrument_id,
         client_id,
         vec![split_quote(instrument_id, 2_500)],
-        recorded[0].start.map(|d| {
-            UnixNanos::from(u64::try_from(d.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
-        }),
-        recorded[0].end.map(|d| {
-            UnixNanos::from(u64::try_from(d.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
-        }),
+        recorded[0]
+            .start
+            .map(|d| UnixNanos::from(u64::try_from(d.as_nanosecond().max(0)).unwrap_or(0))),
+        recorded[0]
+            .end
+            .map(|d| UnixNanos::from(u64::try_from(d.as_nanosecond().max(0)).unwrap_or(0))),
     ));
 
     let received = saver.get_messages();
@@ -19083,18 +19248,11 @@ fn test_request_quotes_skip_catalog_data_param_honored(
     let recorded = recorded_request_quotes(&recorder);
     assert_eq!(recorded.len(), 1, "skip flag should bypass catalog leg");
     assert_eq!(
-        recorded[0]
-            .start
-            .map(|d| d.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[0].start.map(|d| d.as_nanosecond()),
         Some(1_000),
         "client leg should cover the full parent window when catalog is skipped"
     );
-    assert_eq!(
-        recorded[0]
-            .end
-            .map(|d| d.timestamp_nanos_opt().unwrap_or(0)),
-        Some(3_000)
-    );
+    assert_eq!(recorded[0].end.map(|d| d.as_nanosecond()), Some(3_000));
 }
 
 #[cfg(feature = "streaming")]
@@ -19251,12 +19409,12 @@ fn test_request_trades_catalog_plus_client_split(
         client_id,
         instrument_id,
         vec![split_trade(instrument_id, 2_500, "T-2")],
-        recorded[0].start.map(|d| {
-            UnixNanos::from(u64::try_from(d.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
-        }),
-        recorded[0].end.map(|d| {
-            UnixNanos::from(u64::try_from(d.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
-        }),
+        recorded[0]
+            .start
+            .map(|d| UnixNanos::from(u64::try_from(d.as_nanosecond().max(0)).unwrap_or(0))),
+        recorded[0]
+            .end
+            .map(|d| UnixNanos::from(u64::try_from(d.as_nanosecond().max(0)).unwrap_or(0))),
         UnixNanos::default(),
         None,
     )));
@@ -19382,12 +19540,12 @@ fn test_request_pipeline_count_resets_after_catalog_split_fanin(
         instrument_id,
         client_id,
         vec![split_quote(instrument_id, 2_500)],
-        recorded[0].start.map(|d| {
-            UnixNanos::from(u64::try_from(d.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
-        }),
-        recorded[0].end.map(|d| {
-            UnixNanos::from(u64::try_from(d.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
-        }),
+        recorded[0]
+            .start
+            .map(|d| UnixNanos::from(u64::try_from(d.as_nanosecond().max(0)).unwrap_or(0))),
+        recorded[0]
+            .end
+            .map(|d| UnixNanos::from(u64::try_from(d.as_nanosecond().max(0)).unwrap_or(0))),
     ));
 
     assert_eq!(data_engine.request_pipeline_count(), 0);
@@ -19576,12 +19734,12 @@ fn test_request_bars_catalog_plus_client_split(
         client_id,
         bar_type,
         vec![split_bar(bar_type, 2_500)],
-        recorded[0].start.map(|d| {
-            UnixNanos::from(u64::try_from(d.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
-        }),
-        recorded[0].end.map(|d| {
-            UnixNanos::from(u64::try_from(d.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
-        }),
+        recorded[0]
+            .start
+            .map(|d| UnixNanos::from(u64::try_from(d.as_nanosecond().max(0)).unwrap_or(0))),
+        recorded[0]
+            .end
+            .map(|d| UnixNanos::from(u64::try_from(d.as_nanosecond().max(0)).unwrap_or(0))),
         UnixNanos::default(),
         None,
     )));
@@ -20473,16 +20631,12 @@ fn test_subscription_name_param_disables_now_clamping(
     let recorded = recorded_request_quotes(&recorder);
     assert_eq!(recorded.len(), 1);
     assert_eq!(
-        recorded[0]
-            .start
-            .map(|d| d.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[0].start.map(|d| d.as_nanosecond()),
         Some(2_000),
         "subscription_name must bypass start clamping"
     );
     assert_eq!(
-        recorded[0]
-            .end
-            .map(|d| d.timestamp_nanos_opt().unwrap_or(0)),
+        recorded[0].end.map(|d| d.as_nanosecond()),
         Some(5_000),
         "subscription_name must bypass end clamping"
     );
@@ -20886,12 +21040,12 @@ fn test_request_book_deltas_catalog_plus_client_split(
         client_id,
         instrument_id,
         vec![split_delta(instrument_id, 2_500)],
-        recorded[0].start.map(|d| {
-            UnixNanos::from(u64::try_from(d.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
-        }),
-        recorded[0].end.map(|d| {
-            UnixNanos::from(u64::try_from(d.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
-        }),
+        recorded[0]
+            .start
+            .map(|d| UnixNanos::from(u64::try_from(d.as_nanosecond().max(0)).unwrap_or(0))),
+        recorded[0]
+            .end
+            .map(|d| UnixNanos::from(u64::try_from(d.as_nanosecond().max(0)).unwrap_or(0))),
         UnixNanos::default(),
         None,
     )));
@@ -21142,12 +21296,12 @@ fn test_request_book_depth_catalog_plus_client_split(
         client_id,
         instrument_id,
         vec![book_depth_at(instrument_id, 2_500)],
-        recorded[0].start.map(|d| {
-            UnixNanos::from(u64::try_from(d.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
-        }),
-        recorded[0].end.map(|d| {
-            UnixNanos::from(u64::try_from(d.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
-        }),
+        recorded[0]
+            .start
+            .map(|d| UnixNanos::from(u64::try_from(d.as_nanosecond().max(0)).unwrap_or(0))),
+        recorded[0]
+            .end
+            .map(|d| UnixNanos::from(u64::try_from(d.as_nanosecond().max(0)).unwrap_or(0))),
         UnixNanos::default(),
         None,
     )));

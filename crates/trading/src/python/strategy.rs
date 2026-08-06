@@ -25,8 +25,8 @@ use std::{
     rc::Rc,
 };
 
-use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
+use jiff::Timestamp;
 use nautilus_common::{
     actor::{
         Actor, DataActor, DataActorNative,
@@ -1165,6 +1165,8 @@ impl DataActor for PyStrategyInner {
         Python::attach(|py| {
             let py_data: Py<PyAny> = if let Some(custom_data) = data.downcast_ref::<CustomData>() {
                 Py::new(py, custom_data.clone())?.into_any()
+            } else if let Some(custom_data) = data.downcast_ref::<Vec<CustomData>>() {
+                custom_data.clone().into_py_any(py)?
             } else {
                 anyhow::bail!("Failed to convert historical data to Python: unsupported type");
             };
@@ -2923,8 +2925,8 @@ impl PyStrategy {
         &mut self,
         data_type: DataType,
         client_id: ClientId,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         limit: Option<usize>,
         params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
@@ -2953,8 +2955,8 @@ impl PyStrategy {
     fn py_request_instrument(
         &mut self,
         instrument_id: InstrumentId,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
@@ -2981,8 +2983,8 @@ impl PyStrategy {
     fn py_request_instruments(
         &mut self,
         venue: Option<Venue>,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
@@ -3037,8 +3039,8 @@ impl PyStrategy {
     fn py_request_book_deltas(
         &mut self,
         instrument_id: InstrumentId,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
@@ -3069,8 +3071,8 @@ impl PyStrategy {
     fn py_request_book_depth(
         &mut self,
         instrument_id: InstrumentId,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         limit: Option<usize>,
         depth: Option<usize>,
         client_id: Option<ClientId>,
@@ -3103,8 +3105,8 @@ impl PyStrategy {
     fn py_request_quotes(
         &mut self,
         instrument_id: InstrumentId,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
@@ -3134,8 +3136,8 @@ impl PyStrategy {
     fn py_request_trades(
         &mut self,
         instrument_id: InstrumentId,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
@@ -3165,8 +3167,8 @@ impl PyStrategy {
     fn py_request_funding_rates(
         &mut self,
         instrument_id: InstrumentId,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
@@ -3196,8 +3198,8 @@ impl PyStrategy {
     fn py_request_bars(
         &mut self,
         bar_type: BarType,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
@@ -4845,6 +4847,46 @@ class IndicatorEventStrategy:
                 }
                 _ => unreachable!("unhandled data callback case: {method_name}"),
             });
+        });
+    }
+
+    #[rstest::rstest]
+    fn test_python_dispatch_historical_custom_data_preserves_payload_shape() {
+        pyo3::Python::initialize();
+
+        Python::attach(|py| {
+            let scalar = stub_custom_data(3, 126, None, None);
+            let py_strategy = assert_python_dispatch(py, "on_historical_data", |rust_strategy| {
+                rust_strategy.inner_mut().on_historical_data(&scalar)
+            });
+            let actual_scalar = py_strategy
+                .call_method1(py, "last_call_args", ("on_historical_data",))
+                .unwrap()
+                .bind(py)
+                .get_item(0)
+                .unwrap()
+                .extract::<CustomData>()
+                .unwrap();
+
+            assert_eq!(actual_scalar, scalar);
+
+            let expected = vec![
+                stub_custom_data(1, 42, None, None),
+                stub_custom_data(2, 84, None, None),
+            ];
+            let py_strategy = assert_python_dispatch(py, "on_historical_data", |rust_strategy| {
+                rust_strategy.inner_mut().on_historical_data(&expected)
+            });
+            let actual = py_strategy
+                .call_method1(py, "last_call_args", ("on_historical_data",))
+                .unwrap()
+                .bind(py)
+                .get_item(0)
+                .unwrap()
+                .extract::<Vec<CustomData>>()
+                .unwrap();
+
+            assert_eq!(actual, expected);
         });
     }
 

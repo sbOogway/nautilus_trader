@@ -97,11 +97,7 @@ impl FromStr for NautilusDataType {
 /// Configuration for ``BacktestEngine`` instances.
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.backtest",
-        from_py_object,
-        unsendable
-    )
+    pyo3::pyclass(module = "nautilus_trader.backtest", from_py_object, unsendable)
 )]
 #[cfg_attr(
     feature = "python",
@@ -119,10 +115,10 @@ pub struct BacktestEngineConfig {
     /// The trader ID for the node.
     #[builder(default)]
     pub trader_id: TraderId,
-    /// If trading strategy state should be loaded from the database on start.
+    /// If actor and strategy state should be loaded from the database on start.
     #[builder(default)]
     pub load_state: bool,
-    /// If trading strategy state should be saved to the database on stop.
+    /// If actor and strategy state should be saved to the database on stop.
     #[builder(default)]
     pub save_state: bool,
     /// If the system should request shutdown when an error log is emitted.
@@ -393,6 +389,16 @@ impl SimulatedVenueConfig {
             );
         }
 
+        for (instrument_id, leverage) in &self.leverages {
+            errors.check(
+                *leverage > Decimal::ZERO,
+                ConfigError::range(
+                    "leverages",
+                    format!("leverage for {instrument_id} must be positive, was {leverage}"),
+                ),
+            );
+        }
+
         errors.check(
             self.liquidation_trigger_ratio.is_finite() && self.liquidation_trigger_ratio > 0.0,
             ConfigError::range(
@@ -411,11 +417,7 @@ impl SimulatedVenueConfig {
 /// Represents a venue configuration for one specific backtest engine.
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.backtest",
-        from_py_object,
-        unsendable
-    )
+    pyo3::pyclass(module = "nautilus_trader.backtest", from_py_object, unsendable)
 )]
 #[cfg_attr(
     feature = "python",
@@ -781,11 +783,7 @@ impl BacktestVenueConfig {
 #[builder(finish_fn(name = build_inner, vis = ""))]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.backtest",
-        from_py_object,
-        unsendable
-    )
+    pyo3::pyclass(module = "nautilus_trader.backtest", from_py_object, unsendable)
 )]
 #[cfg_attr(
     feature = "python",
@@ -1037,11 +1035,7 @@ impl BacktestDataConfig {
 #[builder(finish_fn(name = build_inner, vis = ""))]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.backtest",
-        from_py_object,
-        unsendable
-    )
+    pyo3::pyclass(module = "nautilus_trader.backtest", from_py_object, unsendable)
 )]
 #[cfg_attr(
     feature = "python",
@@ -1184,6 +1178,17 @@ mod tests {
         };
     }
 
+    macro_rules! minimal_simulated_builder {
+        () => {
+            SimulatedVenueConfig::builder()
+                .venue(Venue::from("SIM"))
+                .oms_type(OmsType::Netting)
+                .account_type(AccountType::Margin)
+                .book_type(BookType::L1_MBP)
+                .starting_balances(vec![Money::from("1_000_000 USD")])
+        };
+    }
+
     #[rstest]
     fn test_minimal_config_is_valid() {
         assert!(minimal_builder!().build().is_ok());
@@ -1229,6 +1234,24 @@ mod tests {
         leverages.insert(InstrumentId::from("ESZ21.GLBX"), Decimal::ZERO);
         let result = minimal_builder!().leverages(leverages).build();
         assert!(matches!(result, Err(ConfigError::Range { field, .. }) if field == "leverages"));
+    }
+
+    #[rstest]
+    #[case(Decimal::ZERO)]
+    #[case(Decimal::from(-1))]
+    fn test_simulated_non_positive_instrument_leverage_rejected(#[case] leverage: Decimal) {
+        let mut leverages = AHashMap::new();
+        leverages.insert(InstrumentId::from("ESZ21.GLBX"), leverage);
+        let result = minimal_simulated_builder!().leverages(leverages).build();
+        assert!(matches!(result, Err(ConfigError::Range { field, .. }) if field == "leverages"));
+    }
+
+    #[rstest]
+    fn test_simulated_positive_instrument_leverage_accepted() {
+        let mut leverages = AHashMap::new();
+        leverages.insert(InstrumentId::from("ESZ21.GLBX"), Decimal::from(10));
+        let result = minimal_simulated_builder!().leverages(leverages).build();
+        assert!(result.is_ok());
     }
 
     #[rstest]

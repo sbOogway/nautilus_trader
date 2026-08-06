@@ -13,31 +13,20 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Authentication state tracking for WebSocket clients.
+//! Adapter authentication state independent of the WebSocket transport state.
 //!
-//! This module provides a robust authentication tracker that coordinates login attempts
-//! and ensures each attempt produces a fresh success or failure signal before operations
-//! resume. It follows a proven pattern used in production.
+//! [`AuthTracker`] separates a specific authentication attempt from the shared session state.
+//! [`AuthTracker::begin`] returns a oneshot receiver for the attempt and fails any earlier pending
+//! attempt as superseded. [`AuthTracker::succeed`] and [`AuthTracker::fail`] resolve the active
+//! attempt and wake state waiters, while [`AuthTracker::invalidate`] returns the session to
+//! unauthenticated without resolving a pending attempt.
 //!
-//! # Key Features
+//! # Client integration
 //!
-//! - **Three-state model**: `Unauthenticated`, `Authenticated`, `Failed` via `AuthState` enum.
-//! - **Oneshot signaling**: Each auth attempt gets a dedicated channel for result notification.
-//! - **Superseding logic**: New authentication requests cancel pending ones.
-//! - **Timeout handling**: Configurable timeout for authentication responses.
-//! - **Generic error mapping**: Adapters can map to their specific error types.
-//! - **Auth-gated waiting**: `wait_for_authenticated()` blocks until auth completes or fails.
-//!
-//! # Recommended Integration Pattern
-//!
-//! Based on production usage, the recommended pattern is:
-//!
-//! 1. **Order operations**: Call `wait_for_authenticated()` before private operations.
-//!    This waits for re-auth after reconnection instead of rejecting immediately.
-//! 2. **Reconnection flow**: Authenticate BEFORE resubscribing to topics.
-//! 3. **Event propagation**: Send auth failures through event channels to consumers.
-//! 4. **State lifecycle**: Call `invalidate()` on reconnectable connection drops,
-//!    and `fail()` on terminal auth rejection or terminal client shutdown.
+//! Registering a tracker with the client invalidates it on reconnectable connection loss and fails
+//! it on terminal shutdown. When authentication‑gated replay is enabled, ordinary buffered sends
+//! wait for `Authenticated` and are discarded on `Failed`. The adapter remains responsible for
+//! sending authentication, interpreting the response, and ordering resubscription.
 
 use std::{
     pin::pin,
@@ -87,28 +76,31 @@ impl AuthState {
     }
 }
 
-/// Generic authentication state tracker for WebSocket connections.
+/// Tracks authentication state for WebSocket connections.
 ///
-/// Coordinates authentication attempts by providing a channel-based signaling
-/// mechanism. Each authentication attempt receives a dedicated oneshot channel
-/// that will be resolved when the server responds.
+/// Each authentication attempt receives a dedicated oneshot channel that resolves when the server
+/// responds.
 ///
-/// # State Management
+/// # State management
 ///
-/// The tracker maintains a three-state machine:
-/// - `Unauthenticated`: after `begin()`, `invalidate()`, or initial construction.
-/// - `Authenticated`: after `succeed()`. Queryable via `is_authenticated()`.
-/// - `Failed`: after `fail()`. Causes `wait_for_authenticated()` to return early.
+/// The tracker maintains three states:
 ///
-/// # Superseding Behavior
+/// - [`AuthState::Unauthenticated`]: The initial state and the state after [`Self::begin`] or
+///   [`Self::invalidate`].
+/// - [`AuthState::Authenticated`]: The state after [`Self::succeed`].
+/// - [`AuthState::Failed`]: The state after [`Self::fail`]. Authentication waiters return early in
+///   this state.
 ///
-/// If a new authentication attempt begins while a previous one is pending,
-/// the old attempt is automatically cancelled with an error. This prevents
-/// auth response race conditions during rapid reconnections.
+/// # Superseding behavior
 ///
-/// # Thread Safety
+/// If a new authentication attempt begins while another remains pending, the old attempt is
+/// cancelled with an error. This prevents responses from an earlier attempt from racing with a
+/// later attempt during rapid reconnections.
 ///
-/// All operations are thread-safe and can be called concurrently from multiple tasks.
+/// # Thread safety
+///
+/// Clones share the pending attempt and session state. All operations are thread‑safe and can run
+/// concurrently from multiple tasks.
 #[derive(Clone, Debug)]
 pub struct AuthTracker {
     tx: Arc<Mutex<Option<AuthResultSender>>>,

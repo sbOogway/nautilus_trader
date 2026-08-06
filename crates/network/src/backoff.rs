@@ -13,44 +13,39 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Provides an implementation of an exponential backoff mechanism with jitter support.
-//! It is used for managing reconnection delays in the socket clients.
+//! Exponential backoff with optional jitter for socket reconnection delays.
 //!
-//! The backoff mechanism allows the delay to grow exponentially up to a configurable
-//! maximum, optionally applying random jitter to avoid synchronized reconnection storms.
-//! An "immediate first" flag is available so that the very first reconnect attempt
-//! can occur without any delay.
+//! Successive delays grow by a configurable factor up to a maximum. Random jitter reduces
+//! synchronized reconnect storms. Immediate‑first mode allows the first reconnect attempt to run
+//! without delay.
 
-use std::time::Duration;
+use std::{pin::pin, sync::atomic::AtomicU8, time::Duration};
 
 use nautilus_core::correctness::{check_in_range_inclusive_f64, check_predicate_true};
 use rand::RngExt;
 
+use crate::{dst, mode::ConnectionMode};
+
+// Keep public reconnect_max_attempts docs synchronized with this value
+pub(crate) const RECONNECT_STABILITY_THRESHOLD: Duration = Duration::from_secs(10);
+
 #[derive(Clone, Debug)]
 pub struct ExponentialBackoff {
-    /// The initial backoff delay.
     delay_initial: Duration,
-    /// The maximum delay to cap the backoff.
     delay_max: Duration,
-    /// The current backoff delay.
     delay_current: Duration,
-    /// The factor to multiply the delay on each iteration.
     factor: f64,
-    /// The maximum random jitter to add (in milliseconds).
     jitter_ms: u64,
-    /// If true, the first call to `next()` returns zero delay (immediate reconnect).
     immediate_reconnect: bool,
-    /// The original value of `immediate_reconnect` for reset purposes.
     immediate_reconnect_original: bool,
 }
 
-/// An exponential backoff mechanism with optional jitter and immediate-first behavior.
+/// An exponential backoff mechanism with optional jitter and immediate‑first behavior.
 ///
-/// This struct computes successive delays for reconnect attempts.
-/// It starts from an initial delay and multiplies it by a factor on each iteration,
-/// capping the delay at a maximum value. Random jitter is added (up to a configured
-/// maximum) to the delay. When `immediate_first` is true, the first call to `next_duration`
-/// returns zero delay, triggering an immediate reconnect, after which the immediate flag is disabled.
+/// The backoff starts at an initial delay, multiplies that delay by a factor after each call, and
+/// caps it at the configured maximum. Each result includes bounded random jitter. When
+/// `immediate_first` is `true`, the first call to [`Self::next_duration`] returns zero. Calling
+/// [`Self::reset`] restores both the initial delay and the original immediate‑first setting.
 impl ExponentialBackoff {
     /// Creates a new [`ExponentialBackoff]` instance.
     ///
@@ -90,7 +85,7 @@ impl ExponentialBackoff {
         })
     }
 
-    /// Return the next backoff delay with jitter and update the internal state.
+    /// Returns the next backoff delay with jitter and updates the internal state.
     ///
     /// If the `immediate_first` flag is set and this is the first call (i.e. the current
     /// delay equals the initial delay), it returns `Duration::ZERO` to trigger an immediate
@@ -120,40 +115,17 @@ impl ExponentialBackoff {
         let floor = std::cmp::min(self.delay_initial, self.delay_max);
         let clamped_delay = delay_with_jitter.clamp(floor, self.delay_max);
 
-        // Prepare the next delay with overflow protection
-        // Keep all math in u128 to avoid silent truncation
-        let current_nanos = self.delay_current.as_nanos();
-        let max_nanos = self.delay_max.as_nanos();
-
-        // Use checked floating point multiplication to prevent overflow
-        let next_nanos_u128 = if current_nanos > u128::from(u64::MAX) {
-            // Current is already at max representable value, cap to max
-            max_nanos
-        } else {
-            let current_u64 = current_nanos as u64;
-            let next_f64 = current_u64 as f64 * self.factor;
-
-            // Check for overflow in the float result
-            if next_f64 > u64::MAX as f64 {
-                u128::from(u64::MAX)
-            } else {
-                u128::from(next_f64 as u64)
-            }
-        };
-
-        let clamped = std::cmp::min(next_nanos_u128, max_nanos);
-        let final_nanos = if clamped > u128::from(u64::MAX) {
-            u64::MAX
-        } else {
-            clamped as u64
-        };
-
-        self.delay_current = Duration::from_nanos(final_nanos);
+        // The constructor guarantees both values fit in u64 nanoseconds. Float-to-integer casts
+        // saturate, so the final min preserves the configured cap even if multiplication overflows.
+        let current_nanos = self.delay_current.as_nanos() as u64;
+        let max_nanos = self.delay_max.as_nanos() as u64;
+        let next_nanos = (current_nanos as f64 * self.factor) as u64;
+        self.delay_current = Duration::from_nanos(next_nanos.min(max_nanos));
 
         clamped_delay
     }
 
-    /// Reset the backoff to its initial state.
+    /// Resets the backoff to its initial state.
     pub const fn reset(&mut self) {
         self.delay_current = self.delay_initial;
         self.immediate_reconnect = self.immediate_reconnect_original;
@@ -165,6 +137,32 @@ impl ExponentialBackoff {
     #[must_use]
     pub const fn current_delay(&self) -> Duration {
         self.delay_current
+    }
+}
+
+pub(crate) async fn wait_reconnect_delay(
+    duration: Duration,
+    connection_mode: &AtomicU8,
+    state_notify: &tokio::sync::Notify,
+) -> bool {
+    if duration.is_zero() {
+        return true;
+    }
+
+    tokio::select! {
+        biased;
+        () = dst::time::sleep(duration) => true,
+        () = async {
+            loop {
+                let mut notified = pin!(state_notify.notified());
+                notified.as_mut().enable();
+
+                if !ConnectionMode::from_atomic(connection_mode).is_reconnect() {
+                    break;
+                }
+                notified.await;
+            }
+        } => false,
     }
 }
 

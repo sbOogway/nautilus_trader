@@ -16,13 +16,13 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{
         Bar, BarType, BookOrder, DEPTH10_LEN, Data, FundingRateUpdate, IndexPriceUpdate,
         MarkPriceUpdate, NULL_ORDER, OptionGreekValues, OptionGreeks, OrderBookDelta,
-        OrderBookDeltas, OrderBookDeltas_API, OrderBookDepth10, QuoteTick, TradeTick,
+        OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
     },
     enums::{AggregationSource, BookAction, GreeksConvention, OrderSide, RecordFlag},
     identifiers::{InstrumentId, TradeId},
@@ -42,6 +42,12 @@ use crate::{
     },
     config::BookSnapshotOutput,
 };
+
+fn timestamp_to_unix_nanos(timestamp: Timestamp, field: &str) -> anyhow::Result<UnixNanos> {
+    let nanos = u64::try_from(timestamp.as_nanosecond())
+        .with_context(|| format!("invalid timestamp: {field} is outside the UnixNanos range"))?;
+    Ok(UnixNanos::from(nanos))
+}
 
 #[must_use]
 pub fn parse_tardis_ws_message(
@@ -64,7 +70,7 @@ pub fn parse_tardis_ws_message(
                 info.size_precision,
                 info.instrument_id,
             ) {
-                Ok(deltas) => Some(Data::Deltas(deltas)),
+                Ok(deltas) => Some(Data::Deltas(Box::new(deltas))),
                 Err(e) => {
                     log::error!("Failed to parse book change message: {e}");
                     None
@@ -108,7 +114,7 @@ pub fn parse_tardis_ws_message(
                         info.size_precision,
                         info.instrument_id,
                     ) {
-                        Ok(deltas) => Some(Data::Deltas(deltas)),
+                        Ok(deltas) => Some(Data::Deltas(Box::new(deltas))),
                         Err(e) => {
                             log::error!("Failed to parse book snapshot as deltas: {e}");
                             None
@@ -296,7 +302,7 @@ pub fn parse_book_change_msg_as_deltas(
     price_precision: u8,
     size_precision: u8,
     instrument_id: InstrumentId,
-) -> anyhow::Result<OrderBookDeltas_API> {
+) -> anyhow::Result<OrderBookDeltas> {
     parse_book_msg_as_deltas(
         &msg.bids,
         &msg.asks,
@@ -320,7 +326,7 @@ pub fn parse_book_snapshot_msg_as_deltas(
     price_precision: u8,
     size_precision: u8,
     instrument_id: InstrumentId,
-) -> anyhow::Result<OrderBookDeltas_API> {
+) -> anyhow::Result<OrderBookDeltas> {
     parse_book_msg_as_deltas(
         &msg.bids,
         &msg.asks,
@@ -344,25 +350,8 @@ pub fn parse_book_snapshot_msg_as_depth10(
     size_precision: u8,
     instrument_id: InstrumentId,
 ) -> anyhow::Result<OrderBookDepth10> {
-    let ts_event_nanos = msg
-        .timestamp
-        .timestamp_nanos_opt()
-        .context("invalid timestamp: cannot extract event nanoseconds")?;
-    anyhow::ensure!(
-        ts_event_nanos >= 0,
-        "invalid timestamp: event nanoseconds {ts_event_nanos} is before UNIX epoch"
-    );
-    let ts_event = UnixNanos::from(ts_event_nanos as u64);
-
-    let ts_init_nanos = msg
-        .local_timestamp
-        .timestamp_nanos_opt()
-        .context("invalid timestamp: cannot extract init nanoseconds")?;
-    anyhow::ensure!(
-        ts_init_nanos >= 0,
-        "invalid timestamp: init nanoseconds {ts_init_nanos} is before UNIX epoch"
-    );
-    let ts_init = UnixNanos::from(ts_init_nanos as u64);
+    let ts_event = timestamp_to_unix_nanos(msg.timestamp, "event timestamp")?;
+    let ts_init = timestamp_to_unix_nanos(msg.local_timestamp, "init timestamp")?;
 
     let mut bids = [NULL_ORDER; DEPTH10_LEN];
     let mut asks = [NULL_ORDER; DEPTH10_LEN];
@@ -416,25 +405,11 @@ pub fn parse_book_msg_as_deltas(
     price_precision: u8,
     size_precision: u8,
     instrument_id: InstrumentId,
-    timestamp: DateTime<Utc>,
-    local_timestamp: DateTime<Utc>,
-) -> anyhow::Result<OrderBookDeltas_API> {
-    let event_nanos = timestamp
-        .timestamp_nanos_opt()
-        .context("invalid timestamp: cannot extract event nanoseconds")?;
-    anyhow::ensure!(
-        event_nanos >= 0,
-        "invalid timestamp: event nanoseconds {event_nanos} is before UNIX epoch"
-    );
-    let ts_event = UnixNanos::from(event_nanos as u64);
-    let init_nanos = local_timestamp
-        .timestamp_nanos_opt()
-        .context("invalid timestamp: cannot extract init nanoseconds")?;
-    anyhow::ensure!(
-        init_nanos >= 0,
-        "invalid timestamp: init nanoseconds {init_nanos} is before UNIX epoch"
-    );
-    let ts_init = UnixNanos::from(init_nanos as u64);
+    timestamp: Timestamp,
+    local_timestamp: Timestamp,
+) -> anyhow::Result<OrderBookDeltas> {
+    let ts_event = timestamp_to_unix_nanos(timestamp, "event timestamp")?;
+    let ts_init = timestamp_to_unix_nanos(local_timestamp, "init timestamp")?;
 
     let capacity = if is_snapshot {
         bids.len() + asks.len() + 1
@@ -483,11 +458,7 @@ pub fn parse_book_msg_as_deltas(
         last_delta.flags |= RecordFlag::F_LAST as u8;
     }
 
-    // TODO: Opaque pointer wrapper necessary for Cython (remove once Cython gone)
-    Ok(OrderBookDeltas_API::new(OrderBookDeltas::new(
-        instrument_id,
-        deltas,
-    )))
+    Ok(OrderBookDeltas::new(instrument_id, deltas))
 }
 
 /// Parse a single book level into an order book delta.
@@ -648,27 +619,9 @@ pub fn parse_bar_msg(
 fn parse_derivative_ticker_timestamps(
     msg: &DerivativeTickerMsg,
 ) -> anyhow::Result<(UnixNanos, UnixNanos)> {
-    let ts_event_nanos = msg
-        .timestamp
-        .timestamp_nanos_opt()
-        .context("invalid timestamp: cannot extract event nanoseconds")?;
-    anyhow::ensure!(
-        ts_event_nanos >= 0,
-        "invalid timestamp: event nanoseconds {ts_event_nanos} is before UNIX epoch"
-    );
-
-    let ts_init_nanos = msg
-        .local_timestamp
-        .timestamp_nanos_opt()
-        .context("invalid timestamp: cannot extract init nanoseconds")?;
-    anyhow::ensure!(
-        ts_init_nanos >= 0,
-        "invalid timestamp: init nanoseconds {ts_init_nanos} is before UNIX epoch"
-    );
-
     Ok((
-        UnixNanos::from(ts_event_nanos as u64),
-        UnixNanos::from(ts_init_nanos as u64),
+        timestamp_to_unix_nanos(msg.timestamp, "event timestamp")?,
+        timestamp_to_unix_nanos(msg.local_timestamp, "init timestamp")?,
     ))
 }
 
@@ -1301,9 +1254,7 @@ mod tests {
 
     #[rstest]
     fn test_parse_option_summary_msg_defaults_absent_fields() {
-        let ts = DateTime::parse_from_rfc3339("2024-01-15T10:30:00.123Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let ts = "2024-01-15T10:30:00.123Z".parse::<Timestamp>().unwrap();
         let msg = OptionSummaryMsg {
             symbol: ustr::Ustr::from("BTC-28JUN24-70000-C"),
             exchange: TardisExchange::Deribit,
@@ -1334,7 +1285,7 @@ mod tests {
         let instrument_id = InstrumentId::from("BTC-28JUN24-70000-C.DERIBIT");
         let greeks = parse_option_summary_msg(&msg, instrument_id);
 
-        // Absent greeks default to 0.0; absent IVs, underlying and open interest stay None.
+        // Absent greeks default to 0.0; absent IVs, underlying, and open interest stay None.
         assert_eq!(greeks.greeks.delta, 0.0);
         assert_eq!(greeks.greeks.gamma, 0.0);
         assert_eq!(greeks.greeks.vega, 0.0);

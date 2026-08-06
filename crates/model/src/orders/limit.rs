@@ -45,7 +45,7 @@ use crate::{
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.model", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -69,6 +69,7 @@ impl LimitOrder {
     /// - The `quantity` is not positive.
     /// - The `display_qty` (when provided) exceeds `quantity`.
     /// - The `time_in_force` is GTD and the `expire_time` is `None` or zero.
+    /// - The order metadata violates an [`OrderInitialized::new_checked`] invariant.
     #[expect(clippy::too_many_arguments)]
     pub fn new_checked(
         trader_id: TraderId,
@@ -101,7 +102,7 @@ impl LimitOrder {
         check_display_qty(display_qty, quantity)?;
         check_time_in_force(time_in_force, expire_time)?;
 
-        let init_order = OrderInitialized::new(
+        let init_order = OrderInitialized::new_checked(
             trader_id,
             strategy_id,
             instrument_id,
@@ -136,7 +137,7 @@ impl LimitOrder {
             exec_algorithm_params,
             exec_spawn_id,
             tags,
-        );
+        )?;
 
         Ok(Self {
             core: OrderCore::new(init_order),
@@ -406,11 +407,11 @@ impl Order for LimitOrder {
         self.overfill_qty
     }
 
-    fn avg_px(&self) -> Option<f64> {
+    fn avg_px(&self) -> Option<Decimal> {
         self.avg_px
     }
 
-    fn slippage(&self) -> Option<f64> {
+    fn slippage(&self) -> Option<Decimal> {
         self.slippage
     }
 

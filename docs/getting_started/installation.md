@@ -2,16 +2,22 @@
 
 NautilusTrader is officially supported for Python 3.12-3.14 on the following 64-bit platforms:
 
-| Operating System       | Supported Versions | CPU Architecture  |
-|------------------------|--------------------|-------------------|
-| Linux (Ubuntu)         | 22.04 and later    | x86_64            |
-| Linux (Ubuntu)         | 22.04 and later    | ARM64             |
-| macOS                  | 15.0 and later     | ARM64             |
-| Windows Server         | 2022 and later     | x86_64            |
+| Operating System | Supported Versions | CPU Architecture |
+| ---------------- | ------------------ | ---------------- |
+| Linux (Ubuntu)   | 22.04 and later    | x86_64           |
+| Linux (Ubuntu)   | 22.04 and later    | ARM64            |
+| macOS            | 15.0 and later     | ARM64            |
+| Windows Server   | 2022 and later     | x86_64           |
 
 :::note
 NautilusTrader may work on other platforms, but only those listed above are regularly used by developers and tested in CI.
 :::
+
+NautilusTrader follows the
+[Python support window in Scientific Python SPEC 0](https://scientific-python.org/specs/spec-0000/).
+Each Python minor version is supported for three years after its initial release. Support normally
+ends in the first NautilusTrader release after that window and after the replacement Python version
+passes compatibility checks.
 
 Continuous CI coverage comes from the GitHub Actions runners we build on:
 
@@ -42,10 +48,10 @@ To install the latest [nautilus_trader](https://pypi.org/project/nautilus_trader
 uv pip install nautilus_trader
 ```
 
-### Python v2 release-candidate wheels
+### Release-candidate wheels
 
-Python v2 is the Rust + PyO3 package under `python/`. Release-candidate wheels publish to PyPI
-using `2.0.0rcN` versions while final v2 validation is in progress.
+NautilusTrader publishes release‑candidate wheels to PyPI using
+`2.0.0rcN` versions while final validation is in progress.
 
 ```bash
 uv pip install --pre nautilus_trader
@@ -55,27 +61,20 @@ The `--pre` flag is required because these wheels are pre-release builds. The in
 is still `nautilus_trader`.
 
 Run this command outside a NautilusTrader source checkout. The repository root uses an
-`exclude-newer` uv policy for reproducible development, which can filter out newly published v2
-wheels. Inside a source checkout, use [Build Python v2 from source](#8-build-python-v2-from-source)
+`exclude-newer` uv policy for reproducible development, which can filter out newly published
+wheels. Inside a source checkout, use [Build Python from source](#8-build-python-from-source)
 instead.
 
-Current v2 wheels target Python 3.12-3.14. Build from source when you need local Rust changes,
+Current wheels target Python 3.12-3.14. Build from source when you need local Rust changes,
 a debug build, or a platform wheel that is not available.
 
 ## Extras
 
-Install optional dependencies as 'extras' for specific integrations:
-
-- `betfair`: Betfair adapter (integration) dependencies.
-- `docker`: Needed for Docker when using the IB gateway (with the Interactive Brokers adapter).
-- `ib`: Interactive Brokers adapter (integration) dependencies.
-- `polymarket`: Polymarket adapter (integration) dependencies.
-- `visualization`: Plotly-based interactive tearsheets and charts.
-
-To install with specific extras:
+Install the optional dependencies for Plotly‑based interactive tearsheets and charts with the
+`visualization` extra:
 
 ```bash
-uv pip install "nautilus_trader[docker,ib]"
+uv pip install "nautilus_trader[visualization]"
 ```
 
 ## From the Nautech Systems package index
@@ -99,31 +98,26 @@ Use `--extra-index-url` instead of `--index-url` if you want uv to fall back to 
 
 ### Development wheels
 
-The main package index publishes v1 development wheels from both the `nightly` and `develop`
+The main package index publishes development wheels from both the `nightly` and `develop`
 branches, allowing users to test features and fixes ahead of stable releases.
 
 This process also helps preserve compute resources and provides easy access to the exact binaries tested in CI pipelines,
 while adhering to [PEP-440](https://peps.python.org/pep-0440/) versioning standards:
 
-- `develop` wheels use the version format `dev{date}+{build_number}` (e.g., `1.208.0.dev20241212+7001`).
-- `nightly` wheels use the version format `a{date}` (alpha) (e.g., `1.208.0a20241212`).
+- `develop` wheels use the version suffix `.devYYYYMMDD+run`.
+- `nightly` wheels use `.devYYYYMMDD` when the base version is already a pre‑release, and
+  `aYYYYMMDD` otherwise.
 
-| Platform           | v1 Nightly | v1 Develop |
-| :----------------- | :--------- | :--------- |
-| `Linux (x86_64)`   | ✓          | ✓          |
-| `Linux (ARM64)`    | ✓          | -          |
-| `macOS (ARM64)`    | ✓          | -          |
-| `Windows (x86_64)` | ✓          | -          |
-
-**Note**: The nightly merge publishes v1 and v2 wheels for all listed platforms, while `develop`
-publishes Linux x86_64 wheels only. Outside those publication builds, cross-platform nightly
-validation is v2-only; the scheduled nightly test workflow does not repeat the v1 platform matrix.
+| Platform           | Develop | Nightly |
+| :----------------- | :------ | :------ |
+| `Linux (x86_64)`   | ✓       | ✓       |
+| `Linux (ARM64)`    | -       | ✓       |
+| `macOS (ARM64)`    | -       | ✓       |
+| `Windows (x86_64)` | -       | ✓       |
 
 :::warning
 We do not recommend using development wheels in production environments, such as live trading controlling real capital.
 :::
-
-### Installation commands
 
 By default, uv will install the latest stable release. Adding the `--pre` flag ensures that pre-release versions, including development wheels, are considered.
 
@@ -133,31 +127,9 @@ To install the latest available pre-release (including development wheels):
 uv pip install nautilus_trader --pre --index-url=https://packages.nautechsystems.io/simple
 ```
 
-To install a specific development wheel (e.g., `1.221.0a20250912` for September 12, 2025):
-
-```bash
-uv pip install nautilus_trader==1.221.0a20250912 --index-url=https://packages.nautechsystems.io/simple
-```
-
-### Python v2 branch development wheels
-
-Branch development wheels for the v2 Rust + PyO3 package publish to a separate v2 index from
-`develop` and `nightly`:
-
-```bash
-uv pip install --pre --index-url=https://packages.nautechsystems.io/v2/simple/ nautilus-trader
-```
-
-| Platform           | v2 Develop | v2 Nightly |
-| :----------------- | :--------- | :--------- |
-| `Linux (x86_64)`   | ✓          | ✓          |
-| `Linux (ARM64)`    | -          | ✓          |
-| `macOS (ARM64)`    | -          | ✓          |
-| `Windows (x86_64)` | -          | ✓          |
-
 The installed import name is still `nautilus_trader`. Run this command outside a NautilusTrader
 source checkout so the repository's `exclude-newer` uv policy does not filter out newly published
-v2 wheels. Build from source when you need local Rust changes, a debug build, or a platform wheel
+wheels. Build from source when you need local Rust changes, a debug build, or a platform wheel
 that is not available.
 
 ### Available versions
@@ -172,13 +144,14 @@ curl -s https://packages.nautechsystems.io/simple/nautilus-trader/index.html | g
 
 ### Branch updates
 
-- `develop` branch wheels (`.dev`): Build and publish continuously with every merged commit.
-- `nightly` branch wheels (`a`): Build and publish daily when we automatically merge the `develop` branch at **14:00 UTC** (if there are changes).
+- `develop` branch wheels (`.devYYYYMMDD+run`): Build and publish continuously with every merged commit.
+- `nightly` branch wheels (`.devYYYYMMDD` or `aYYYYMMDD`): Build and publish daily when we
+  automatically merge the `develop` branch at **14:00 UTC** (if there are changes).
 
 ### Retention policies
 
-- `develop` branch wheels (`.dev`): We retain only the most recent wheel build.
-- `nightly` branch wheels (`a`): We retain only the 30 most recent wheel builds.
+- `develop` branch wheels: We retain only the most recent wheel build.
+- `nightly` branch wheels: We retain only the 30 most recent publication dates per platform.
 
 ### Verifying build provenance
 
@@ -260,14 +233,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 irm https://astral.sh/uv/install.ps1 | iex
 ```
 
-### 5. Clone and install
+### 5. Clone and sync dependencies
 
-Clone the source with `git`, and install from the project's root directory:
+Clone the source with `git`, then sync its dependencies from the project root:
 
 ```bash
 git clone --branch develop --depth 1 https://github.com/nautechsystems/nautilus_trader
 cd nautilus_trader
-uv sync --all-extras
+make sync
 ```
 
 For development hosts and CI runner images, see the
@@ -297,7 +270,7 @@ Cap'n Proto is a development dependency. It is not required when installing pre-
 ### 7. Set environment variables
 
 Set environment variables for PyO3 compilation (Linux and macOS only). Run these commands from
-the repository root after `uv sync`:
+the repository root after `make sync`:
 
 ```bash
 # Set the Python executable path for PyO3
@@ -318,32 +291,30 @@ The `PYTHONHOME` variable is required when running `make cargo-test` with a `uv`
 Without it, tests that depend on PyO3 may fail to locate the Python runtime.
 :::
 
-### 8. Build Python v2 from source
+### 8. Build Python from source
 
-This path builds the PyO3 package from the `python/` directory and installs it into `python/.venv`.
-Use it from a NautilusTrader source checkout, when a v2 development wheel is not available for your
-platform, or when you need local Rust changes.
+This path builds the PyO3 package from the `python/` directory and installs it into the root `.venv`.
+Use it from a NautilusTrader source checkout when a development wheel is not available for your
+platform or when you need local Rust changes.
 
 From the repository root:
 
 ```bash
-make build-debug-v2
+make build-debug
 ```
 
-This target syncs `python/.venv`, builds the Rust extension with maturin, and regenerates Python
-type stubs. It uses `target-v2/` for Cargo artifacts so it does not conflict with the legacy Python
-build in `target/`.
+This target syncs `.venv`, builds the Rust extension with maturin, and regenerates Python type
+stubs. It uses `target/` for Cargo artifacts.
 
-Run a Python v2 example with the v2 environment:
+Run a Python example with the project environment:
 
 ```bash
-cd python
-.venv/bin/python examples/lighter/data_tester.py --lighter-environment testnet
+.venv/bin/python examples/live/lighter/data_tester.py --lighter-environment testnet
 ```
 
-For direct commands and test targets, see the [Python v2 README][python-v2-readme].
+For direct commands and test targets, see the [Python package README][python-readme].
 
-[python-v2-readme]: https://github.com/nautechsystems/nautilus_trader/blob/develop/python/README.md
+[python-readme]: https://github.com/nautechsystems/nautilus_trader/blob/develop/python/README.md
 
 ## From GitHub release
 
@@ -404,9 +375,7 @@ which differ in their internal bit-width and maximum decimal precision.
 - **Standard-precision**: 64-bit integers with up to 9 decimals of precision, and a smaller value range.
 
 :::note
-By default, the official Python wheels ship in high-precision (128-bit) mode on Linux and macOS.
-On Windows, only standard-precision (64-bit) Python wheels are available because MSVC's C/C++ frontend
-does not support `__int128`, preventing the Cython/FFI layer from handling 128-bit integers.
+By default, the official Python wheels ship in high‑precision (128‑bit) mode on all supported platforms.
 
 For pure Rust crates, high-precision works on all platforms (including Windows) since Rust handles
 `i128`/`u128` via software emulation. The default is standard-precision unless you explicitly enable
@@ -422,19 +391,13 @@ Performance benchmarks comparing the modes are pending.
 
 ### Build configuration
 
-The precision mode is determined by:
+The precision mode is selected at compile time through the `high-precision` Rust feature flag.
+The Python package enables this flag in the maturin build features (see `python/pyproject.toml`),
+so source builds default to high-precision. For a standard-precision (64-bit) Python build,
+remove `high-precision` from the maturin feature list, then build as usual:
 
-- Setting the `HIGH_PRECISION` environment variable during compilation, **and/or**
-- Enabling the `high-precision` Rust feature flag explicitly.
-
-```bash tab="High-precision (128-bit)"
-export HIGH_PRECISION=true
-make install-debug
-```
-
-```bash tab="Standard-precision (64-bit)"
-export HIGH_PRECISION=false
-make install-debug
+```bash
+make build-debug
 ```
 
 ### Rust feature flag
@@ -443,7 +406,7 @@ To enable high-precision (128-bit) mode in Rust, add the `high-precision` featur
 
 ```toml
 [dependencies]
-nautilus_core = { version = "*", features = ["high-precision"] }
+nautilus-core = { version = "*", features = ["high-precision"] }
 ```
 
 :::info

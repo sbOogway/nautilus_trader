@@ -31,7 +31,7 @@ use crate::common::{
 #[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.adapters.bybit", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -176,7 +176,7 @@ impl BybitDataClientConfig {
 #[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.adapters.bybit", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -227,6 +227,11 @@ pub struct BybitExecClientConfig {
     /// Whether to generate position reports from wallet balances for SPOT positions.
     #[builder(default)]
     pub use_spot_position_reports: bool,
+    /// Whether to automatically repay SPOT margin borrows after BUY orders tracked by
+    /// this client and reported on the standard `execution` channel (not `execution.fast`)
+    /// fully fill.
+    #[builder(default)]
+    pub auto_repay_spot_borrows: bool,
     /// Leverage configuration for futures (symbol -> leverage).
     pub futures_leverages: Option<HashMap<String, u32>>,
     /// Position mode configuration for symbols (symbol -> mode).
@@ -254,6 +259,7 @@ nautilus_core::impl_pyo3_config_getters!(BybitExecClientConfig {
     recv_window_ms: u64,
     account_id: Option<AccountId>,
     use_spot_position_reports: bool,
+    auto_repay_spot_borrows: bool,
     margin_mode: Option<BybitMarginMode>,
     transport_backend: TransportBackend,
 });

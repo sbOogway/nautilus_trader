@@ -7,7 +7,8 @@ execution with Bybit.
 
 ## Examples
 
-You can find live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/bybit/).
+- [Python examples](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/bybit/)
+- [Rust examples](https://github.com/nautechsystems/nautilus_trader/tree/develop/crates/adapters/bybit/examples/)
 
 ## Overview
 
@@ -20,8 +21,8 @@ on the use case.
 - `BybitInstrumentProvider`: Instrument parsing and loading functionality.
 - `BybitDataClient`: A market data feed manager.
 - `BybitExecutionClient`: An account management and trade execution gateway.
-- `BybitLiveDataClientFactory`: Factory for Bybit data clients (used by the trading node builder).
-- `BybitLiveExecClientFactory`: Factory for Bybit execution clients (used by the trading node builder).
+- `BybitDataClientFactory`: Factory for Bybit data clients.
+- `BybitExecutionClientFactory`: Factory for Bybit execution clients.
 
 :::note
 Most users will define a configuration for a live trading node (as below),
@@ -44,7 +45,7 @@ Product is also referred to as `category` in the Bybit v5 API.
 The following product types are supported on Bybit:
 
 | Product Type                | Supported | Notes                                    |
-|-----------------------------|-----------|------------------------------------------|
+| --------------------------- | --------- | ---------------------------------------- |
 | Spot cryptocurrencies       | ✓         | Native spot markets with margin support. |
 | Linear perpetual contracts  | ✓         | USDT/USDC margined perpetual swaps.      |
 | Linear futures contracts    | ✓         | Delivery‑settled linear futures.         |
@@ -77,49 +78,20 @@ whatever symbol the API returns.
 
 ## Instrument loading
 
-Bybit data and execution clients use the common `instrument_provider` config.
-Configure it to load instruments before strategies subscribe to market data or submit
-orders. Subscriptions do not request missing instrument definitions.
-
-```python
-from nautilus_trader.adapters.bybit import BybitProductType
-from nautilus_trader.adapters.bybit.config import BybitDataClientConfig
-from nautilus_trader.config import InstrumentProviderConfig
-
-BybitDataClientConfig(
-    instrument_provider=InstrumentProviderConfig(load_all=True),
-    product_types=(BybitProductType.SPOT,),
-)
-```
-
-Use `load_ids` when you only need a known set of instruments:
-
-```python
-from nautilus_trader.adapters.bybit import BybitProductType
-from nautilus_trader.adapters.bybit.config import BybitDataClientConfig
-from nautilus_trader.config import InstrumentProviderConfig
-from nautilus_trader.model.identifiers import InstrumentId
-
-BybitDataClientConfig(
-    instrument_provider=InstrumentProviderConfig(
-        load_ids=frozenset([InstrumentId.from_str("BTCUSDT-SPOT.BYBIT")]),
-    ),
-    product_types=(BybitProductType.SPOT,),
-)
-```
-
-The configured `product_types` must include the product suffix in each instrument ID.
+The data and execution clients load all instruments for their configured `product_types` when they
+connect. The default is `LINEAR`. Include each product type required by your subscriptions or
+orders.
 
 ## Environments
 
 Bybit provides three trading environments. Configure the appropriate
 environment with the `environment` enum on your client configuration.
 
-| Environment  | Config                                | Description                                                      |
-|--------------|---------------------------------------|------------------------------------------------------------------|
-| **Mainnet**  | `BybitEnvironment.MAINNET`            | Production trading with real funds.                              |
-| **Demo**     | `BybitEnvironment.DEMO`               | Practice trading with simulated funds on mainnet infrastructure. |
-| **Testnet**  | `BybitEnvironment.TESTNET`            | Separate test network for development and integration testing.   |
+| Environment | Config                     | Description                                                      |
+| ----------- | -------------------------- | ---------------------------------------------------------------- |
+| **Mainnet** | `BybitEnvironment.MAINNET` | Production trading with real funds.                              |
+| **Demo**    | `BybitEnvironment.DEMO`    | Practice trading with simulated funds on mainnet infrastructure. |
+| **Testnet** | `BybitEnvironment.TESTNET` | Separate test network for development and integration testing.   |
 
 ### Mainnet (Production)
 
@@ -127,6 +99,7 @@ The default environment for live trading with real funds.
 
 ```python
 from nautilus_trader.adapters.bybit import BybitEnvironment
+from nautilus_trader.adapters.bybit import BybitExecClientConfig
 
 config = BybitExecClientConfig(
     api_key="YOUR_API_KEY",
@@ -145,6 +118,7 @@ Create demo API keys from the
 
 ```python
 from nautilus_trader.adapters.bybit import BybitEnvironment
+from nautilus_trader.adapters.bybit import BybitExecClientConfig
 
 config = BybitExecClientConfig(
     api_key="YOUR_DEMO_API_KEY",
@@ -171,6 +145,7 @@ A separate test network for development and integration testing.
 
 ```python
 from nautilus_trader.adapters.bybit import BybitEnvironment
+from nautilus_trader.adapters.bybit import BybitExecClientConfig
 
 config = BybitExecClientConfig(
     api_key="YOUR_TESTNET_API_KEY",
@@ -233,7 +208,7 @@ All the order types listed below can be used as *either* entries or exits, excep
 ### Order types
 
 | Order Type             | Spot | Linear | Inverse | Option | Notes                             |
-|------------------------|------|--------|---------|--------|-----------------------------------|
+| ---------------------- | ---- | ------ | ------- | ------ | --------------------------------- |
 | `MARKET`               | ✓    | ✓      | ✓       | ✓      | Supports quote quantity.          |
 | `LIMIT`                | ✓    | ✓      | ✓       | ✓      |                                   |
 | `STOP_MARKET`          | ✓    | ✓      | ✓       | -      | *Not supported for Options*.      |
@@ -245,65 +220,53 @@ All the order types listed below can be used as *either* entries or exits, excep
 ### Execution instructions
 
 | Instruction   | Spot | Linear | Inverse | Option | Notes                             |
-|---------------|------|--------|---------|--------|-----------------------------------|
+| ------------- | ---- | ------ | ------- | ------ | --------------------------------- |
 | `post_only`   | ✓    | ✓      | ✓       | ✓      | Only supported on `LIMIT` orders. |
 | `reduce_only` | -    | ✓      | ✓       | ✓      | *Not supported for Spot*.         |
 
 ### Time in force
 
-| Time in force | Spot | Linear | Inverse | Option | Notes                        |
-|---------------|------|--------|---------|--------|------------------------------|
-| `GTC`         | ✓    | ✓      | ✓       | ✓      | Good Till Canceled.          |
-| `GTD`         | -    | -      | -       | -      | *Not supported*.             |
-| `FOK`         | ✓    | ✓      | ✓       | ✓      | Fill or Kill.                |
-| `IOC`         | ✓    | ✓      | ✓       | ✓      | Immediate or Cancel.         |
+| Time in force | Spot | Linear | Inverse | Option | Notes                |
+| ------------- | ---- | ------ | ------- | ------ | -------------------- |
+| `GTC`         | ✓    | ✓      | ✓       | ✓      | Good Till Canceled.  |
+| `GTD`         | -    | -      | -       | -      | *Not supported*.     |
+| `FOK`         | ✓    | ✓      | ✓       | ✓      | Fill or Kill.        |
+| `IOC`         | ✓    | ✓      | ✓       | ✓      | Immediate or Cancel. |
 
 ### Advanced order features
 
 | Feature            | Spot | Linear | Inverse | Option | Notes                                  |
-|--------------------|------|--------|---------|--------|----------------------------------------|
+| ------------------ | ---- | ------ | ------- | ------ | -------------------------------------- |
 | Order Modification | ✓    | ✓      | ✓       | ✓      | Price and quantity modification.       |
 | Bracket/OCO Orders | ✓    | ✓      | ✓       | -      | UI only; API users implement manually. |
 | Iceberg Orders     | ✓    | ✓      | ✓       | -      | Max 10 per account, 1 per symbol.      |
 
 ### Batch operations
 
-| Operation          | Spot | Linear | Inverse | Option | Notes                                     |
-|--------------------|------|--------|---------|--------|-------------------------------------------|
-| Batch Submit       | ✓    | ✓      | ✓       | ✓      | Submit multiple orders in single request. |
-| Batch Modify       | ✓    | ✓      | ✓       | ✓      | Modify multiple orders in single request. |
-| Batch Cancel       | ✓    | ✓      | ✓       | ✓      | Cancel multiple orders in single request. |
+| Operation    | Spot | Linear | Inverse | Option | Notes                                     |
+| ------------ | ---- | ------ | ------- | ------ | ----------------------------------------- |
+| Batch Submit | ✓    | ✓      | ✓       | ✓      | Submit multiple orders in single request. |
+| Batch Modify | ✓    | ✓      | ✓       | ✓      | Modify multiple orders in single request. |
+| Batch Cancel | ✓    | ✓      | ✓       | ✓      | Cancel multiple orders in single request. |
 
 ### Position management
 
-| Feature             | Spot | Linear | Inverse | Option | Notes                                    |
-|---------------------|------|--------|---------|--------|------------------------------------------|
-| Query positions     | -    | ✓      | ✓       | ✓      | Real‑time position updates.              |
-| Position mode       | -    | ✓      | ✓       | -      | One‑Way only for Options.                |
-| Leverage control    | -    | ✓      | ✓       | -      | Not applicable for Options.              |
-| Margin mode         | -    | ✓      | ✓       | ✓      | Cross, Isolated, or Portfolio Margin.    |
+| Feature          | Spot | Linear | Inverse | Option | Notes                                 |
+| ---------------- | ---- | ------ | ------- | ------ | ------------------------------------- |
+| Query positions  | -    | ✓      | ✓       | ✓      | Real‑time position updates.           |
+| Position mode    | -    | ✓      | ✓       | -      | One‑Way only for Options.             |
+| Leverage control | -    | ✓      | ✓       | -      | Not applicable for Options.           |
+| Margin mode      | -    | ✓      | ✓       | ✓      | Cross, Isolated, or Portfolio Margin. |
 
 #### Hedge mode (BothSides)
 
-Bybit only accepts `BOTH_SIDES` on USDT linear perpetuals. For other product
-types configure `MERGED_SINGLE` or omit them from `position_mode`. Configure
-per symbol:
+Bybit only accepts Both Sides mode on USDT linear perpetuals. Configure the position mode at Bybit,
+then pass `position_idx` through the order `params`: `1` for the long side or `2` for the short side.
+Use `0` or omit the parameter for one‑way mode.
 
-```python
-from nautilus_trader.adapters.bybit import BybitPositionMode
-
-config = BybitExecClientConfig(
-    ...,
-    position_mode={"ETHUSDT-LINEAR": BybitPositionMode.BOTH_SIDES},
-)
-```
-
-On connect the adapter calls `/v5/position/switch-mode` for each entry, then
-derives `positionIdx` for every order: opening BUY -> `1` (long), opening
-SELL -> `2` (short), reduce-only SELL -> `1`, reduce-only BUY -> `2`.
-Bybit documents this in the V5 [switch position mode](https://bybit-exchange.github.io/docs/v5/position/position-mode)
+Bybit documents these values in the V5 [switch position mode](https://bybit-exchange.github.io/docs/v5/position/position-mode)
 and [place order](https://bybit-exchange.github.io/docs/v5/order/create-order#request-parameters)
-APIs: `mode=3` enables Both Sides, and hedge-mode orders require `positionIdx`.
+APIs.
 
 Orders and reports with `positionIdx=0` (one-way / Merged Single mode) carry no
 venue position ID. For hedge-mode indexes `1` and `2`, the adapter maps reports
@@ -313,16 +276,16 @@ onto fills when Bybit execution messages do not include `positionIdx`.
 To override, pass `position_idx` via `params`:
 
 ```python
-params={"position_idx": 1}  # 0 one-way, 1 long, 2 short
+params = {"position_idx": 1}  # 0 one-way, 1 long, 2 short
 ```
 
 ### Risk events
 
-| Feature                   | Spot | Linear | Inverse | Option | Notes                                     |
-|---------------------------|------|--------|---------|--------|-------------------------------------------|
-| Liquidation handling      | -    | ✓      | ✓       | ✓      | Takeover fills flagged as exchange‑generated. |
-| ADL handling              | -    | ✓      | ✓       | ✓      | Auto‑deleveraging fills flagged and logged.   |
-| ADL rank warnings         | -    | ✓      | ✓       | ✓      | Position reports logged when `adlRankIndicator >= 4`. |
+| Feature              | Spot | Linear | Inverse | Option | Notes                                                 |
+| -------------------- | ---- | ------ | ------- | ------ | ----------------------------------------------------- |
+| Liquidation handling | -    | ✓      | ✓       | ✓      | Takeover fills flagged as exchange‑generated.         |
+| ADL handling         | -    | ✓      | ✓       | ✓      | Auto‑deleveraging fills flagged and logged.           |
+| ADL rank warnings    | -    | ✓      | ✓       | ✓      | Position reports logged when `adlRankIndicator >= 4`. |
 
 Bybit emits venue-initiated fills with `execType` set to:
 
@@ -333,6 +296,7 @@ Bybit emits venue-initiated fills with `execType` set to:
   position after margin was exhausted.
 - `Delivery`: USDC futures delivery.
 - `Settle`: Inverse futures settlement.
+- `CorporateAction`: Stock split or reverse stock split.
 
 The adapter flags each as exchange-generated and logs a warning containing the
 execution ID, symbol, side, quantity, and price. Fills flow through the normal
@@ -354,43 +318,43 @@ Upstream references:
 
 ### Order querying
 
-| Feature             | Spot | Linear | Inverse | Option | Notes                                   |
-|---------------------|------|--------|---------|--------|-----------------------------------------|
-| Query open orders   | ✓    | ✓      | ✓       | ✓      | List all active orders.                 |
-| Query order history | ✓    | ✓      | ✓       | ✓      | Historical order data.                  |
-| Order status updates| ✓    | ✓      | ✓       | ✓      | Real‑time order state changes.          |
-| Trade history       | ✓    | ✓      | ✓       | ✓      | Execution and fill reports.             |
+| Feature              | Spot | Linear | Inverse | Option | Notes                          |
+| -------------------- | ---- | ------ | ------- | ------ | ------------------------------ |
+| Query open orders    | ✓    | ✓      | ✓       | ✓      | List all active orders.        |
+| Query order history  | ✓    | ✓      | ✓       | ✓      | Historical order data.         |
+| Order status updates | ✓    | ✓      | ✓       | ✓      | Real‑time order state changes. |
+| Trade history        | ✓    | ✓      | ✓       | ✓      | Execution and fill reports.    |
 
 ### Contingent orders
 
-| Feature             | Spot | Linear | Inverse | Option | Notes                                   |
-|---------------------|------|--------|---------|--------|-----------------------------------------|
-| Order lists         | ✓    | ✓      | ✓       | ✓      | Submitted as a batch via WebSocket.     |
-| OCO orders          | ✓    | ✓      | ✓       | -      | UI only; API users implement manually.  |
-| Bracket orders      | ✓    | ✓      | ✓       | -      | UI only; API users implement manually.  |
-| Conditional orders  | ✓    | ✓      | ✓       | -      | Stop and limit‑if‑touched orders.       |
+| Feature            | Spot | Linear | Inverse | Option | Notes                                  |
+| ------------------ | ---- | ------ | ------- | ------ | -------------------------------------- |
+| Order lists        | ✓    | ✓      | ✓       | ✓      | Submitted as a batch via WebSocket.    |
+| OCO orders         | ✓    | ✓      | ✓       | -      | UI only; API users implement manually. |
+| Bracket orders     | ✓    | ✓      | ✓       | -      | UI only; API users implement manually. |
+| Conditional orders | ✓    | ✓      | ✓       | -      | Stop and limit‑if‑touched orders.      |
 
 ### Order parameters
 
 Individual orders can be customized using the `params` dictionary when submitting orders:
 
-| Parameter          | Type                   | Description                                                             |
-|--------------------|------------------------|-------------------------------------------------------------------------|
-| `is_leverage`      | `bool`                 | Spot only. Enables margin trading (borrowing). Default: `False`.        |
-| `take_profit`      | `str` or `float`       | TP trigger price. Attaches a native TP to the order.                    |
-| `stop_loss`        | `str` or `float`       | SL trigger price. Attaches a native SL to the order.                    |
-| `tp_trigger_by`    | `str`                  | TP trigger type: `"LastPrice"`, `"IndexPrice"`, or `"MarkPrice"`.       |
-| `sl_trigger_by`    | `str`                  | SL trigger type: `"LastPrice"`, `"IndexPrice"`, or `"MarkPrice"`.       |
-| `tp_order_type`    | `str`                  | TP execution type: `"Market"` or `"Limit"`. Default: `"Market"`.        |
-| `sl_order_type`    | `str`                  | SL execution type: `"Market"` or `"Limit"`. Default: `"Market"`.        |
-| `tp_limit_price`   | `str` or `float`       | Limit price for TP when `tp_order_type` is `"Limit"`.                   |
-| `sl_limit_price`   | `str` or `float`       | Limit price for SL when `sl_order_type` is `"Limit"`.                   |
-| `tp_trigger_price` | `str` or `float`       | Custom TP trigger price (overrides `take_profit`).                      |
-| `sl_trigger_price` | `str` or `float`       | Custom SL trigger price (overrides `stop_loss`).                        |
-| `close_on_trigger` | `bool`                 | Close the position when TP/SL triggers. Default: `False`.               |
-| `position_idx`     | `int`                  | Hedge‑mode position index. See [Hedge mode](#hedge-mode-bothsides).     |
-| `bbo_side_type`    | `str`                  | Linear/inverse BBO side: `"Queue"` or `"Counterparty"`.                 |
-| `bbo_level`        | `str` or `int`         | Linear/inverse BBO book level: `"1"` through `"5"`.                     |
+| Parameter          | Type             | Description                                                         |
+| ------------------ | ---------------- | ------------------------------------------------------------------- |
+| `is_leverage`      | `bool`           | Spot only. Enables margin trading (borrowing). Default: `False`.    |
+| `take_profit`      | `str` or `float` | TP trigger price. Attaches a native TP to the order.                |
+| `stop_loss`        | `str` or `float` | SL trigger price. Attaches a native SL to the order.                |
+| `tp_trigger_by`    | `str`            | TP trigger type: `"LastPrice"`, `"IndexPrice"`, or `"MarkPrice"`.   |
+| `sl_trigger_by`    | `str`            | SL trigger type: `"LastPrice"`, `"IndexPrice"`, or `"MarkPrice"`.   |
+| `tp_order_type`    | `str`            | TP execution type: `"Market"` or `"Limit"`. Default: `"Market"`.    |
+| `sl_order_type`    | `str`            | SL execution type: `"Market"` or `"Limit"`. Default: `"Market"`.    |
+| `tp_limit_price`   | `str` or `float` | Limit price for TP when `tp_order_type` is `"Limit"`.               |
+| `sl_limit_price`   | `str` or `float` | Limit price for SL when `sl_order_type` is `"Limit"`.               |
+| `tp_trigger_price` | `str` or `float` | Custom TP trigger price (overrides `take_profit`).                  |
+| `sl_trigger_price` | `str` or `float` | Custom SL trigger price (overrides `stop_loss`).                    |
+| `close_on_trigger` | `bool`           | Close the position when TP/SL triggers. Default: `False`.           |
+| `position_idx`     | `int`            | Hedge‑mode position index. See [Hedge mode](#hedge-mode-bothsides). |
+| `bbo_side_type`    | `str`            | Linear/inverse BBO side: `"Queue"` or `"Counterparty"`.             |
+| `bbo_level`        | `str` or `int`   | Linear/inverse BBO book level: `"1"` through `"5"`.                 |
 
 :::note
 On demo, native TP/SL params route through the HTTP create-order endpoint, with one exception:
@@ -443,7 +407,7 @@ order = strategy.order_factory.market(
     instrument_id=InstrumentId.from_str("BTCUSDT-SPOT.BYBIT"),
     order_side=OrderSide.BUY,
     quantity=Quantity.from_str("0.1"),
-    params={"is_leverage": True}  # Enable margin for this order
+    params={"is_leverage": True},  # Enable margin for this order
 )
 strategy.submit_order(order)
 ```
@@ -454,7 +418,7 @@ and do not borrow funds, even if you have auto-borrow enabled on your Bybit acco
 :::
 
 For a complete example of using order parameters including `is_leverage`, see the
-[bybit_exec_tester.py](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/bybit/bybit_exec_tester.py) example.
+[Python execution tester](https://github.com/nautechsystems/nautilus_trader/blob/develop/examples/live/bybit/exec_tester.py).
 
 ## Spot margin borrowing and repayment
 
@@ -468,15 +432,22 @@ This can result in significant interest costs if left unattended.
 
 ### Automatic repayment (recommended)
 
-NautilusTrader automatically repays spot margin borrows immediately after BUY orders fill on Spot instruments.
-This feature is **enabled by default** via the `auto_repay_spot_borrows` configuration flag.
+The execution client can automatically repay spot margin borrows after BUY orders fully fill
+on Spot instruments. This feature is disabled by default, so set
+`auto_repay_spot_borrows=True` to opt in.
 
 **How it works:**
 
-1. When a Spot BUY order fills, the execution client automatically attempts to repay any outstanding borrows for that coin.
-2. The repayment uses Bybit's `no-convert-repay` endpoint, which repays the full outstanding borrow amount.
-3. If the repayment fails (e.g., API error), it logs the error but does not crash the execution client.
-4. Repayments are automatically skipped during Bybit's UTC blackout window (see below).
+1. When a Spot BUY order fully fills on the standard `execution` channel, the execution client
+   attempts to repay the base coin borrow.
+1. The repayment is capped at the lesser of the outstanding borrow and the base quantity acquired
+   across the order's executions.
+1. The execution client uses Bybit's converting repay endpoint to cover base-denominated trading
+   fees. For MNT, which Bybit excludes from converting repayment, it uses no-convert repay and
+   subtracts MNT-denominated fees from the amount.
+1. A failed request or `FA` result status is logged without crashing the execution client. A `P`
+   result status is logged as processing, not complete.
+1. The execution client defers queued repayments during Bybit's UTC blackout window.
 
 **Example:**
 
@@ -487,7 +458,7 @@ config = BybitExecClientConfig(
     api_key="YOUR_API_KEY",
     api_secret="YOUR_API_SECRET",
     product_types=[BybitProductType.SPOT],
-    auto_repay_spot_borrows=True,  # Default is True
+    auto_repay_spot_borrows=True,  # Opt in; default is False
 )
 ```
 
@@ -497,7 +468,7 @@ Strategies can control margin borrowing and repayment directly via `query_accoun
 `BybitMarginAction` enum:
 
 | Action                                | Description                      |
-|---------------------------------------|----------------------------------|
+| ------------------------------------- | -------------------------------- |
 | `BybitMarginAction.BORROW`            | Borrow funds for margin trading. |
 | `BybitMarginAction.REPAY`             | Repay borrowed funds.            |
 | `BybitMarginAction.GET_BORROW_AMOUNT` | Query current borrowed amount.   |
@@ -550,14 +521,14 @@ from nautilus_trader.adapters.bybit import BybitMarginAction
 from nautilus_trader.adapters.bybit import BybitMarginBorrowResult
 from nautilus_trader.adapters.bybit import BybitMarginRepayResult
 from nautilus_trader.adapters.bybit import BybitMarginStatusResult
-from nautilus_trader.model.data import DataType
+from nautilus_trader.model import DataType
 
 
 class MyStrategy(Strategy):
     def on_start(self):
-        self.subscribe_data(DataType(BybitMarginBorrowResult))
-        self.subscribe_data(DataType(BybitMarginRepayResult))
-        self.subscribe_data(DataType(BybitMarginStatusResult))
+        self.subscribe_data(DataType(BybitMarginBorrowResult.__name__))
+        self.subscribe_data(DataType(BybitMarginRepayResult.__name__))
+        self.subscribe_data(DataType(BybitMarginStatusResult.__name__))
 
     def on_data(self, data):
         if isinstance(data, BybitMarginBorrowResult):
@@ -576,28 +547,25 @@ class MyStrategy(Strategy):
 
 ### UTC blackout window
 
-Bybit blocks `no-convert-repay` operations daily during **04:00-05:30 UTC** for interest calculation processing. NautilusTrader automatically detects this window and skips repayment attempts, logging a warning instead.
+Bybit blocks both repayment endpoints from **4 minutes through 5 minutes 30 seconds past every UTC
+hour** for interest calculation. Auto-repayment keeps the request queued and attempts it at 5
+minutes 31 seconds past the hour.
 
-During the blackout window, any BUY order fills will trigger a warning like:
+### Auto-repayment configuration
 
-```
-Skipping borrow repayment for BTC due to Bybit blackout window (04:00-05:30 UTC daily). Will need manual repayment.
-```
+| Option                    | Type   | Default | Description                                                                                                                |
+| ------------------------- | ------ | ------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `auto_repay_spot_borrows` | `bool` | `False` | If `True`, automatically repay Spot margin borrows after BUY orders fully fill. Repayment is deferred during the blackout. |
 
-**Important:** If your BUY orders fill during the blackout window, you'll need to manually repay the borrows after 05:30 UTC to stop interest accrual, or wait for the next BUY order fill outside the blackout window.
-
-### Configuration options
-
-| Option                    | Type   | Default | Description                                                                 |
-|---------------------------|--------|---------|-----------------------------------------------------------------------------|
-| `auto_repay_spot_borrows` | `bool` | `True`  | If `True`, automatically repay spot margin borrows after BUY orders fill. Prevents interest accrual on borrowed coins. Repayment is skipped during blackout window. |
-
-### Important notes
+### Auto-repayment notes
 
 - Auto-repayment only triggers on **Spot BUY orders**, not derivatives.
-- Repayment uses the `no-convert-repay` endpoint which repays the full outstanding borrow by default.
-- The feature gracefully handles API errors and logs failures without crashing.
-- Manual borrowing is still required before opening short positions unless auto-borrow is enabled on your Bybit account.
+- Repayment uses converting repayment except for MNT, which uses no-convert repayment.
+- Bybit documents the endpoint restrictions and result statuses in
+  [Manual Repay](https://bybit-exchange.github.io/docs/v5/account/repay) and
+  [Manual Repay Without Asset Conversion](https://bybit-exchange.github.io/docs/v5/account/no-convert-repay).
+- Manual borrowing is still required before opening short positions unless auto-borrow is enabled
+  on your Bybit account.
 
 ### Spot trading limitations
 
@@ -617,15 +585,15 @@ suffix. See the [symbology section](#symbology) for the full symbol format.
 The adapter supports real-time options market data through the WebSocket ticker
 channel:
 
-| Data type                  | Description                                              |
-|----------------------------|----------------------------------------------------------|
-| Quotes (bid/ask)           | Top‑of‑book prices and sizes for each option contract.   |
-| Greeks                     | Delta, gamma, vega, theta, plus bid/ask/mark IV.         |
-| Mark price                 | Exchange mark price for each option contract.            |
-| Index price                | Underlying index price.                                  |
-| Underlying (forward) price | Per‑expiry forward price, used for ATM determination.    |
-| Open interest              | Per‑contract open interest.                              |
-| Order book deltas          | L2 MBP updates from the option orderbook stream.         |
+| Data type                  | Description                                            |
+| -------------------------- | ------------------------------------------------------ |
+| Quotes (bid/ask)           | Top‑of‑book prices and sizes for each option contract. |
+| Greeks                     | Delta, gamma, vega, theta, plus bid/ask/mark IV.       |
+| Mark price                 | Exchange mark price for each option contract.          |
+| Index price                | Underlying index price.                                |
+| Underlying (forward) price | Per‑expiry forward price, used for ATM determination.  |
+| Open interest              | Per‑contract open interest.                            |
+| Order book deltas          | L2 MBP updates from the option orderbook stream.       |
 
 Subscribe to per-instrument Greeks or aggregate them into option chain
 snapshots with ATM-relative strike filtering. See the
@@ -641,10 +609,10 @@ streams for this product type.
 
 In addition to the standard order parameters, option orders accept:
 
-| Parameter  | Type             | Description                                              |
-|------------|------------------|----------------------------------------------------------|
+| Parameter  | Type             | Description                                                      |
+| ---------- | ---------------- | ---------------------------------------------------------------- |
 | `order_iv` | `str` or `float` | Place or amend the order by implied volatility instead of price. |
-| `mmp`      | `bool`           | Enable Market Maker Protection for the order.            |
+| `mmp`      | `bool`           | Enable Market Maker Protection for the order.                    |
 
 These parameters are passed through `params` on `SubmitOrder`. On mainnet they flow through the
 WebSocket trade channel; on demo they route through the HTTP create-order endpoint. Amending an
@@ -689,16 +657,16 @@ funding timestamps.
 
 Every HTTP call consumes the global token bucket as well as any keyed quota(s). When usage exceeds a bucket, requests are queued automatically, so manual throttling is rarely required.
 
-| Key / Endpoint            | Limit (requests/sec) | Notes                                              |
-|---------------------------|----------------------|----------------------------------------------------|
-| `bybit:global`            | 120                  | Exchange‑wide 600 req / 5 s ceiling.               |
-| `/v5/market/kline`        | 20                   | Historical sweeps throttled slightly below global. |
-| `/v5/market/trades`       | 24                   | Matches the global quota.                          |
-| `/v5/order/create`        | 10                   | Standard order placement.                          |
-| `/v5/order/cancel`        | 10                   | Single‑order cancellation.                         |
-| `/v5/order/create-batch`  | 5                    | Batch placement endpoints.                         |
-| `/v5/order/cancel-batch`  | 5                    | Batch cancellation endpoints.                      |
-| `/v5/order/cancel-all`    | 2                    | Full book cancel to mirror Bybit guidance.         |
+| Key / Endpoint           | Limit (requests/sec) | Notes                                              |
+| ------------------------ | -------------------- | -------------------------------------------------- |
+| `bybit:global`           | 120                  | Exchange‑wide 600 req / 5 s ceiling.               |
+| `/v5/market/kline`       | 20                   | Historical sweeps throttled slightly below global. |
+| `/v5/market/trades`      | 24                   | Matches the global quota.                          |
+| `/v5/order/create`       | 10                   | Standard order placement.                          |
+| `/v5/order/cancel`       | 10                   | Single‑order cancellation.                         |
+| `/v5/order/create-batch` | 5                    | Batch placement endpoints.                         |
+| `/v5/order/cancel-batch` | 5                    | Batch cancellation endpoints.                      |
+| `/v5/order/cancel-all`   | 2                    | Full book cancel to mirror Bybit guidance.         |
 
 :::warning
 Bybit responds with error code `10016` when the rate limit is exceeded and may temporarily block the IP if requests continue without back-off.
@@ -773,11 +741,11 @@ When maker fees are negative (rebates), the currency logic is **inverted**:
 
 For all derivatives products (LINEAR, INVERSE, OPTION), fees are always charged in the **settlement currency**:
 
-| Product Type | Settlement Currency                   | Fee Currency |
-|--------------|---------------------------------------|--------------|
-| LINEAR       | USDT (typically)                      | USDT         |
-| INVERSE      | Base coin (e.g., BTC for BTCUSD)      | Base coin    |
-| OPTION       | USDT                                  | USDT         |
+| Product Type | Settlement Currency              | Fee Currency |
+| ------------ | -------------------------------- | ------------ |
+| LINEAR       | USDT (typically)                 | USDT         |
+| INVERSE      | Base coin (e.g., BTC for BTCUSD) | Base coin    |
+| OPTION       | USDT                             | USDT         |
 
 ### Fee calculation
 
@@ -805,106 +773,57 @@ The product types for each client must be specified in the configurations.
 
 ### Data client configuration options
 
-| Option                             | Default   | Description |
-|------------------------------------|-----------|-------------|
-| `api_key`                          | `None`    | API key; loaded from the matching environment variable when omitted. |
-| `api_secret`                       | `None`    | API secret; loaded from the matching environment variable when omitted. |
-| `product_types`                    | `None`    | Sequence of `BybitProductType` values to enable; loads all products when `None`. |
-| `instrument_provider`              | default   | Instrument loading config. Use `load_all=True` or `load_ids` before subscribing. |
-| `environment`                      | `None`    | Bybit environment enum. Use `BybitEnvironment.MAINNET`, `BybitEnvironment.DEMO`, or `BybitEnvironment.TESTNET`. |
-| `base_url_http`                    | `None`    | Override for the REST base URL. |
-| `proxy_url`                        | `None`    | Optional proxy URL for HTTP and WebSocket transports. |
-| `update_instruments_interval_mins` | `60`      | Interval (minutes) between instrument catalogue refreshes. |
-| `recv_window_ms`                   | `5,000`   | Receive window (milliseconds) for signed REST requests. |
-| `bars_timestamp_on_close`          | `True`    | Timestamp bars on the close (`True`) or open (`False`) of the interval. |
-| `max_retries`                      | `None`    | Maximum retry attempts for REST/WebSocket recovery. |
-| `retry_delay_initial_ms`           | `None`    | Initial delay (milliseconds) between retries. |
-| `retry_delay_max_ms`               | `None`    | Maximum delay (milliseconds) between retries. |
-| `transport_backend`                | `Sockudo` | WebSocket transport backend. |
+| Option                             | Default    | Description                                                                                                     |
+| ---------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------- |
+| `product_types`                    | `[LINEAR]` | Sequence of `BybitProductType` values to enable.                                                                |
+| `environment`                      | `MAINNET`  | Bybit environment enum. Use `BybitEnvironment.MAINNET`, `BybitEnvironment.DEMO`, or `BybitEnvironment.TESTNET`. |
+| `api_key`                          | `None`     | API key; loaded from the matching environment variable when omitted.                                            |
+| `api_secret`                       | `None`     | API secret; loaded from the matching environment variable when omitted.                                         |
+| `base_url_http`                    | `None`     | Override for the REST base URL.                                                                                 |
+| `base_url_ws_public`               | `None`     | Override for the public WebSocket URL.                                                                          |
+| `base_url_ws_private`              | `None`     | Override for the private WebSocket URL.                                                                         |
+| `proxy_url`                        | `None`     | Optional proxy URL for HTTP and WebSocket transports.                                                           |
+| `http_timeout_secs`                | `60`       | Timeout (seconds) for REST requests.                                                                            |
+| `max_retries`                      | `3`        | Maximum retry attempts for REST requests.                                                                       |
+| `retry_delay_initial_ms`           | `1,000`    | Initial retry delay (milliseconds).                                                                             |
+| `retry_delay_max_ms`               | `10,000`   | Maximum retry delay (milliseconds).                                                                             |
+| `heartbeat_interval_secs`          | `20`       | Heartbeat interval (seconds) for WebSocket clients.                                                             |
+| `recv_window_ms`                   | `5,000`    | Receive window (milliseconds) for signed REST requests.                                                         |
+| `update_instruments_interval_mins` | `60`       | Interval (minutes) between instrument catalog refreshes.                                                        |
+| `instrument_status_poll_secs`      | `60`       | Interval (seconds) between instrument and status polls.                                                         |
+| `transport_backend`                | `Sockudo`  | WebSocket transport backend.                                                                                    |
 
 ### Execution client configuration options
 
-| Option                                  | Default   | Description |
-|-----------------------------------------|-----------|-------------|
-| `api_key`                               | `None`    | API key; loaded from the matching environment variable when omitted. |
-| `api_secret`                            | `None`    | API secret; loaded from the matching environment variable when omitted. |
-| `product_types`                         | `None`    | Sequence of `BybitProductType` values to enable (Spot cannot be mixed with derivatives for execution). |
-| `instrument_provider`                   | default   | Instrument loading config. Use `load_all=True` or `load_ids` before submitting orders. |
-| `environment`                           | `None`    | Bybit environment enum. Use `BybitEnvironment.MAINNET`, `BybitEnvironment.DEMO`, or `BybitEnvironment.TESTNET`. |
-| `base_url_http`                         | `None`    | Override for the REST base URL. |
-| `base_url_ws_private`                   | `None`    | Override for the private WebSocket base URL. |
-| `base_url_ws_trade`                     | `None`    | Override for the trade WebSocket base URL. |
-| `proxy_url`                             | `None`    | Optional proxy URL for HTTP and WebSocket transports. |
-| `use_gtd`                               | `False`   | Remap GTD orders to GTC when `True` (Bybit lacks native GTD support). |
-| `use_ws_execution_fast`                 | `False`   | Subscribe to the low‑latency execution stream. |
-| `use_http_batch_api`                    | `False`   | Use Bybit's HTTP batch trading API (deprecated). |
-| `use_spot_position_reports`             | `False`   | Report Spot wallet balances as positions when `True`. |
-| `auto_repay_spot_borrows`               | `True`    | Automatically repay Spot margin borrows after BUY orders fully fill (Spot only). |
-| `repay_queue_interval_secs`             | `1.0`     | Interval (seconds) between processing repayment queues for spot borrows. |
-| `ignore_uncached_instrument_executions` | `False`   | Ignore execution messages for instruments not yet cached. |
-| `max_retries`                           | `None`    | Maximum retry attempts for order submission/cancel/modify calls. |
-| `retry_delay_initial_ms`                | `None`    | Initial delay (milliseconds) between retries. |
-| `retry_delay_max_ms`                    | `None`    | Maximum delay (milliseconds) between retries. |
-| `recv_window_ms`                        | `5,000`   | Receive window (milliseconds) for signed REST requests. |
-| `ws_trade_timeout_secs`                 | `5.0`     | Timeout (seconds) waiting for trade WebSocket acknowledgements. |
-| `ws_auth_timeout_secs`                  | `5.0`     | Timeout (seconds) waiting for auth WebSocket acknowledgements. |
-| `futures_leverages`                     | `None`    | Mapping of `BybitSymbol` to leverage settings. |
-| `position_mode`                         | `None`    | Mapping of `BybitSymbol` to position mode. See [Hedge mode](#hedge-mode-bothsides). |
-| `margin_mode`                           | `None`    | Margin mode setting for the account. |
-| `transport_backend`                     | `Sockudo` | WebSocket transport backend. |
+| Option                      | Default    | Description                                                                                                     |
+| --------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------- |
+| `product_types`             | `[LINEAR]` | Sequence of `BybitProductType` values to enable. Spot cannot be mixed with derivatives for execution.           |
+| `environment`               | `MAINNET`  | Bybit environment enum. Use `BybitEnvironment.MAINNET`, `BybitEnvironment.DEMO`, or `BybitEnvironment.TESTNET`. |
+| `api_key`                   | `None`     | API key; loaded from the matching environment variable when omitted.                                            |
+| `api_secret`                | `None`     | API secret; loaded from the matching environment variable when omitted.                                         |
+| `base_url_http`             | `None`     | Override for the REST base URL.                                                                                 |
+| `base_url_ws_private`       | `None`     | Override for the private WebSocket base URL.                                                                    |
+| `base_url_ws_trade`         | `None`     | Override for the trade WebSocket base URL.                                                                      |
+| `proxy_url`                 | `None`     | Optional proxy URL for HTTP and WebSocket transports.                                                           |
+| `http_timeout_secs`         | `60`       | Timeout (seconds) for REST requests.                                                                            |
+| `max_retries`               | `3`        | Maximum retry attempts for REST requests.                                                                       |
+| `retry_delay_initial_ms`    | `1,000`    | Initial retry delay (milliseconds).                                                                             |
+| `retry_delay_max_ms`        | `10,000`   | Maximum retry delay (milliseconds).                                                                             |
+| `heartbeat_interval_secs`   | `5`        | Heartbeat interval (seconds) for WebSocket clients.                                                             |
+| `auth_timeout_secs`         | `None`     | Optional WebSocket authentication timeout (seconds).                                                            |
+| `recv_window_ms`            | `5,000`    | Receive window (milliseconds) for signed REST requests.                                                         |
+| `account_id`                | `None`     | Optional account ID associated with this client.                                                                |
+| `use_spot_position_reports` | `False`    | Report Spot wallet balances as positions when `True`.                                                           |
+| `auto_repay_spot_borrows`   | `False`    | Automatically repay tracked Spot margin borrows after BUY orders fully fill.                                    |
+| `margin_mode`               | `None`     | Unified margin mode setting for the account.                                                                    |
+| `transport_backend`         | `Sockudo`  | WebSocket transport backend.                                                                                    |
 
-The most common use case is to configure a live `TradingNode` to include Bybit
-data and execution clients. To achieve this, add a `BYBIT` section to your client
-configuration(s):
+The compiled default is Sockudo when the `transport-sockudo` Cargo feature is enabled and
+Tungstenite otherwise.
 
-```python
-from nautilus_trader.adapters.bybit import BYBIT
-from nautilus_trader.adapters.bybit import BybitEnvironment
-from nautilus_trader.adapters.bybit import BybitProductType
-from nautilus_trader.live.node import TradingNode
-from nautilus_trader.live.node import TradingNodeConfig
-
-config = TradingNodeConfig(
-    ...,  # Omitted
-    data_clients={
-        BYBIT: {
-            "api_key": "YOUR_BYBIT_API_KEY",
-            "api_secret": "YOUR_BYBIT_API_SECRET",
-            "base_url_http": None,  # Override with custom endpoint
-            "environment": BybitEnvironment.MAINNET,
-            "product_types": [BybitProductType.LINEAR],
-        },
-    },
-    exec_clients={
-        BYBIT: {
-            "api_key": "YOUR_BYBIT_API_KEY",
-            "api_secret": "YOUR_BYBIT_API_SECRET",
-            "base_url_http": None,  # Override with custom endpoint
-            "environment": BybitEnvironment.MAINNET,
-            "product_types": [BybitProductType.LINEAR],
-        },
-    },
-)
-```
-
-Then, create a `TradingNode` and add the client factories:
-
-```python
-from nautilus_trader.adapters.bybit import BYBIT
-from nautilus_trader.adapters.bybit import BybitLiveDataClientFactory
-from nautilus_trader.adapters.bybit import BybitLiveExecClientFactory
-from nautilus_trader.live.node import TradingNode
-
-# Instantiate the live trading node with a configuration
-node = TradingNode(config=config)
-
-# Register the client factories with the node
-node.add_data_client_factory(BYBIT, BybitLiveDataClientFactory)
-node.add_exec_client_factory(BYBIT, BybitLiveExecClientFactory)
-
-# Finally build the node
-node.build()
-```
+Use `BybitDataClientConfig` with `BybitDataClientFactory` and `BybitExecClientConfig` with
+`BybitExecutionClientFactory`. The current Python examples show the complete
+`LiveNode.builder(...)` configuration for data and execution clients.
 
 ### API credentials
 

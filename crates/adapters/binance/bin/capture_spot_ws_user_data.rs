@@ -54,7 +54,7 @@ use std::{
     time::Duration,
 };
 
-use chrono::Utc;
+use jiff::{Timestamp, tz::Offset};
 use nautilus_binance::common::{
     consts,
     credential::{SigningCredential, resolve_credentials},
@@ -194,7 +194,6 @@ async fn main() -> anyhow::Result<()> {
         ws_config,
         Some(raw_handler),
         Some(ping_handler),
-        None,
         vec![],
         None,
     )
@@ -345,7 +344,9 @@ async fn main() -> anyhow::Result<()> {
     // Write manifest
     let manifest = FixtureManifest {
         command: env::args().collect::<Vec<_>>().join(" "),
-        captured_at: Utc::now().to_rfc3339(),
+        captured_at: Timestamp::now()
+            .display_with_offset(Offset::UTC)
+            .to_string(),
         environment: environment_name(config.environment).to_string(),
         symbol: config.symbol,
         output_dir: output_root.display().to_string(),
@@ -439,7 +440,9 @@ fn record_fixture(
 
     let metadata = FixtureMetadata {
         fixture: record.clone(),
-        captured_at: Utc::now().to_rfc3339(),
+        captured_at: Timestamp::now()
+            .display_with_offset(Offset::UTC)
+            .to_string(),
     };
     write_json(&output_root.join(&record.metadata_path), &metadata)?;
 

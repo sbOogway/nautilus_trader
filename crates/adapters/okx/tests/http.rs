@@ -33,7 +33,7 @@ use axum::{
     response::{IntoResponse, Json},
     routing::{get, post},
 };
-use chrono::{Duration as ChronoDuration, TimeZone, Utc};
+use jiff::{SignedDuration, Timestamp};
 use nautilus_common::{cache::InstrumentLookupError, testing::wait_until_async};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
@@ -50,25 +50,29 @@ use nautilus_network::http::HttpClient;
 use nautilus_okx::{
     common::{
         enums::{
-            OKXAlgoOrderStatus, OKXEnvironment, OKXInstrumentType, OKXOrderStatus, OKXPositionMode,
-            OKXTradeMode, OKXTriggerType,
+            OKXAlgoOrderStatus, OKXEnvironment, OKXInstrumentType, OKXOrderStatus, OKXOrderType,
+            OKXPositionMode, OKXRpiPermission, OKXSide, OKXTradeMode, OKXTriggerType,
         },
         models::OKXInstrument,
     },
     http::{
         client::{OKXHttpClient, OKXRawHttpClient, OKXResponse},
         error::OKXHttpError,
-        models::{OKXAttachAlgoOrdRequest, OKXCancelOrderRequest},
+        models::{
+            OKXAmendOrderRequest, OKXAttachAlgoOrdRequest, OKXCancelOrderRequest,
+            OKXPlaceOrderRequest,
+        },
         query::{
             GetAlgoOrdersParamsBuilder, GetInstrumentsParamsBuilder, GetOptionSummaryParamsBuilder,
             GetOrderHistoryParams, GetOrderListParams, GetOrderParamsBuilder,
             GetPositionTiersParamsBuilder, GetPositionsParamsBuilder, GetPriceLimitParamsBuilder,
-            GetSpreadsParamsBuilder, GetTradeFeeParamsBuilder, GetTransactionDetailsParamsBuilder,
-            SetPositionModeParamsBuilder,
+            GetRpiOrderBookParams, GetSpreadsParamsBuilder, GetTradeFeeParamsBuilder,
+            GetTransactionDetailsParamsBuilder, SetPositionModeParamsBuilder,
         },
     },
 };
 use rstest::rstest;
+use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use ustr::Ustr;
 
@@ -79,6 +83,7 @@ struct TestServerState {
     last_pending_orders_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
     last_order_history_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
     last_order_detail_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
+    mark_price_queries: Arc<tokio::sync::Mutex<Vec<HashMap<String, String>>>>,
     option_summary_queries: Arc<tokio::sync::Mutex<Vec<HashMap<String, String>>>>,
     option_summary_response: Arc<tokio::sync::Mutex<Option<Value>>>,
     price_limit_queries: Arc<tokio::sync::Mutex<Vec<HashMap<String, String>>>>,
@@ -92,6 +97,7 @@ struct TestServerState {
     spread_orders_history_response: Arc<tokio::sync::Mutex<Option<Value>>>,
     spread_trades_response: Arc<tokio::sync::Mutex<Option<Value>>>,
     event_series_queries: Arc<tokio::sync::Mutex<Vec<HashMap<String, String>>>>,
+    algo_details_queries: Arc<tokio::sync::Mutex<Vec<HashMap<String, String>>>>,
     algo_pending_queries: Arc<tokio::sync::Mutex<Vec<HashMap<String, String>>>>,
     algo_history_queries: Arc<tokio::sync::Mutex<Vec<HashMap<String, String>>>>,
     last_order_body: Arc<tokio::sync::Mutex<Option<Value>>>,
@@ -347,6 +353,8 @@ fn create_router(state: Arc<TestServerState>) -> Router {
     let order_detail_state = state.clone();
     let order_place_state = state.clone();
     let order_cancel_state = state.clone();
+    let mark_price_state = state.clone();
+    let algo_details_state = state.clone();
     let algo_pending_state = state.clone();
     let algo_history_state = state.clone();
     let positions_state = state.clone();
@@ -635,7 +643,21 @@ fn create_router(state: Arc<TestServerState>) -> Router {
         )
         .route(
             "/api/v5/public/mark-price",
-            get(|| async { Json(load_test_data("http_get_mark_price.json")) }),
+            get(move |Query(params): Query<HashMap<String, String>>| {
+                let state = mark_price_state.clone();
+                async move {
+                    state.mark_price_queries.lock().await.push(params.clone());
+                    if params.get("instType").map(String::as_str) != Some("SWAP") {
+                        return Json(json!({
+                            "code": "51000",
+                            "msg": "Parameter instType error",
+                            "data": [],
+                        }));
+                    }
+
+                    Json(load_test_data("http_get_mark_price.json"))
+                }
+            }),
         )
         .route(
             "/api/v5/public/opt-summary",
@@ -864,6 +886,15 @@ fn create_router(state: Arc<TestServerState>) -> Router {
 
                         state.algo_pending_queries.lock().await.push(params.clone());
 
+                        if params.contains_key("state") {
+                            return Json(json!({
+                                "code": "51000",
+                                "msg": "Parameter state error",
+                                "data": [],
+                            }))
+                            .into_response();
+                        }
+
                         if params.get("algoClOrdId").map(String::as_str) == Some("O-attached-oco") {
                             if params.get("ordType").map(String::as_str) != Some("oco") {
                                 return (
@@ -948,14 +979,50 @@ fn create_router(state: Arc<TestServerState>) -> Router {
                             .into_response();
                         }
 
-                        Json(load_test_data("http_get_orders_algo_history.json")).into_response()
+                        let mut response = load_test_data("http_get_orders_algo_history.json");
+                        if let Some(requested_state) = params.get("state") {
+                            response["data"][0]["state"] = json!(requested_state);
+                        }
+
+                        Json(response).into_response()
                     }
                 },
             ),
         )
         .route(
             "/api/v5/trade/order-algo",
-            post(move |headers: HeaderMap, Json(payload): Json<Value>| {
+            get(
+                move |headers: HeaderMap, Query(params): Query<HashMap<String, String>>| {
+                    let state = algo_details_state.clone();
+                    async move {
+                        if !has_auth_headers(&headers) {
+                            return (
+                                StatusCode::UNAUTHORIZED,
+                                Json(json!({
+                                    "code": "401",
+                                    "msg": "Missing authentication headers",
+                                    "data": [],
+                                })),
+                            )
+                                .into_response();
+                        }
+
+                        let fixture = match params.get("algoClOrdId").map(String::as_str) {
+                            Some("O-attached-oco") => {
+                                "http_get_orders_algo_pending_attached_oco.json"
+                            }
+                            Some("O-close-frac-status") => {
+                                "http_get_orders_algo_pending_close_fraction.json"
+                            }
+                            _ => "http_get_orders_algo_history.json",
+                        };
+
+                        state.algo_details_queries.lock().await.push(params);
+                        Json(load_test_data(fixture)).into_response()
+                    }
+                },
+            )
+            .post(move |headers: HeaderMap, Json(payload): Json<Value>| {
                 let state = algo_order_state.clone();
                 async move {
                     if !has_auth_headers(&headers) {
@@ -1200,8 +1267,10 @@ async fn test_http_get_instruments_returns_data() {
 
     let instruments = client.get_instruments(params).await.unwrap();
 
-    assert!(!instruments.is_empty());
+    assert_eq!(instruments.len(), 5);
     assert_eq!(instruments[0].inst_type, OKXInstrumentType::Spot);
+    assert_eq!(instruments[0].rpi_min_level, Some(5));
+    assert_eq!(instruments[0].rpi_min_px_band, Some(Decimal::from(20)));
 }
 
 #[rstest]
@@ -1341,6 +1410,9 @@ async fn test_http_place_order_with_domain_types_routes_spread_request() {
             Quantity::from("10"),
             Some(TimeInForce::Gtc),
             Some(Price::from("1.25")),
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1527,6 +1599,9 @@ async fn test_http_place_order_with_domain_types_rejects_invalid_spread_inputs(
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap_err();
@@ -1570,14 +1645,8 @@ async fn test_http_request_order_status_reports_routes_spread_request() {
         .await
         .unwrap();
     client.cache_instruments(&instruments);
-    let start = Utc
-        .timestamp_millis_opt(1_700_000_000_000)
-        .single()
-        .unwrap();
-    let end = Utc
-        .timestamp_millis_opt(1_700_000_002_000)
-        .single()
-        .unwrap();
+    let start = Timestamp::from_millisecond(1_700_000_000_000).unwrap();
+    let end = Timestamp::from_millisecond(1_700_000_002_000).unwrap();
 
     let reports = client
         .request_order_status_reports(
@@ -1814,14 +1883,8 @@ async fn test_http_request_fill_reports_routes_spread_request() {
         .await
         .unwrap();
     client.cache_instruments(&instruments);
-    let start = Utc
-        .timestamp_millis_opt(1_700_000_000_000)
-        .single()
-        .unwrap();
-    let end = Utc
-        .timestamp_millis_opt(1_700_000_002_000)
-        .single()
-        .unwrap();
+    let start = Timestamp::from_millisecond(1_700_000_000_000).unwrap();
+    let end = Timestamp::from_millisecond(1_700_000_002_000).unwrap();
 
     let reports = client
         .request_fill_reports(
@@ -2360,8 +2423,8 @@ async fn test_request_trades_pagination_parameters() {
         client.cache_instrument(instrument);
     }
 
-    let start = Utc::now() - ChronoDuration::minutes(5);
-    let end = Utc::now();
+    let start = Timestamp::now() - SignedDuration::from_mins(5);
+    let end = Timestamp::now();
 
     let trades = client
         .request_trades(
@@ -2629,7 +2692,7 @@ async fn test_request_trades_range_mode_pagination() {
             "/api/v5/market/history-trades",
             get({
                 move |Query(params): Query<HashMap<String, String>>| async move {
-                    let now_ms = Utc::now().timestamp_millis();
+                    let now_ms = Timestamp::now().as_millisecond();
                     // OKX backwards semantics: 'after' is used for backward pagination (get older trades)
                     let after_trade_id = params.get("after").and_then(|s| s.parse::<i64>().ok());
 
@@ -2723,8 +2786,8 @@ async fn test_request_trades_range_mode_pagination() {
 
     // Regression test for issue #2997 where Range mode pagination could get stuck
     // when all trades on a page are filtered out
-    let start = Utc::now() - ChronoDuration::hours(2);
-    let end = Utc::now() - ChronoDuration::hours(1);
+    let start = Timestamp::now() - SignedDuration::from_hours(2);
+    let end = Timestamp::now() - SignedDuration::from_hours(1);
 
     let trades = client
         .request_trades(
@@ -2740,8 +2803,8 @@ async fn test_request_trades_range_mode_pagination() {
 
     for trade in &trades {
         let trade_ts = trade.ts_event.as_i64();
-        let start_ns = start.timestamp_nanos_opt().unwrap();
-        let end_ns = end.timestamp_nanos_opt().unwrap();
+        let start_ns = i64::try_from(start.as_nanosecond()).unwrap();
+        let end_ns = i64::try_from(end.as_nanosecond()).unwrap();
         assert!(
             trade_ts >= start_ns && trade_ts <= end_ns,
             "Trade timestamp should be within requested range"
@@ -2897,8 +2960,8 @@ async fn test_request_bars_range_mode_pagination() {
 
     // Regression test for issue #3145 where Range mode pagination could get stuck
     // when all bars on a page are filtered out
-    let start = Utc::now() - ChronoDuration::hours(2);
-    let end = Utc::now() - ChronoDuration::hours(1);
+    let start = Timestamp::now() - SignedDuration::from_hours(2);
+    let end = Timestamp::now() - SignedDuration::from_hours(1);
 
     let bars = client
         .request_bars(bar_type, Some(start), Some(end), Some(100))
@@ -2909,8 +2972,8 @@ async fn test_request_bars_range_mode_pagination() {
 
     for bar in &bars {
         let bar_ts = bar.ts_event.as_i64();
-        let start_ns = start.timestamp_nanos_opt().unwrap();
-        let end_ns = end.timestamp_nanos_opt().unwrap();
+        let start_ns = i64::try_from(start.as_nanosecond()).unwrap();
+        let end_ns = i64::try_from(end.as_nanosecond()).unwrap();
         assert!(
             bar_ts >= start_ns && bar_ts <= end_ns,
             "Bar timestamp should be within requested range"
@@ -2949,8 +3012,8 @@ async fn test_request_trades_multi_page_chronological_order() {
     }
 
     // Request range that spans multiple pages (typical page = 100 trades)
-    let start = Utc::now() - ChronoDuration::minutes(10);
-    let end = Utc::now();
+    let start = Timestamp::now() - SignedDuration::from_mins(10);
+    let end = Timestamp::now();
 
     let trades = client
         .request_trades(
@@ -3061,7 +3124,7 @@ async fn test_request_trades_overlapping_pages_chronological_order() {
     }
 
     // Use Range mode with end timestamp to trigger backward pagination
-    let end = Utc::now();
+    let end = Timestamp::now();
     let trades = client
         .request_trades(InstrumentId::from("BTC-USD.OKX"), None, Some(end), Some(10))
         .await
@@ -3178,7 +3241,7 @@ async fn test_request_trades_default_limit_with_end_only() {
     }
 
     // Request with end timestamp but no limit (should default to 100)
-    let end = Utc::now();
+    let end = Timestamp::now();
     let trades = client
         .request_trades(
             InstrumentId::from("BTC-USD.OKX"),
@@ -3222,7 +3285,7 @@ async fn test_request_trades_historical_with_filtered_pages() {
             "/api/v5/market/history-trades",
             get({
                 move |Query(params): Query<HashMap<String, String>>| async move {
-                    let now_ms = Utc::now().timestamp_millis();
+                    let now_ms = Timestamp::now().as_millisecond();
                     // OKX backwards semantics: 'after' is used for backward pagination
                     let after_trade_id = params.get("after").and_then(|s| s.parse::<i64>().ok());
 
@@ -3327,9 +3390,9 @@ async fn test_request_trades_historical_with_filtered_pages() {
     }
 
     // Request trades from 2.5 hours ago to 1.5 hours ago
-    let now = Utc::now();
-    let start = now - ChronoDuration::milliseconds(2 * 3600 * 1000 + 1800 * 1000);
-    let end = now - ChronoDuration::milliseconds(3600 * 1000 + 1800 * 1000);
+    let now = Timestamp::now();
+    let start = now - SignedDuration::from_millis(2 * 3600 * 1000 + 1800 * 1000);
+    let end = now - SignedDuration::from_millis(3600 * 1000 + 1800 * 1000);
 
     let trades = client
         .request_trades(
@@ -3377,7 +3440,7 @@ async fn test_request_trades_multiple_trades_same_id() {
 
                     // OKX backwards semantics: 'after' is used for backward pagination
                     let after_id = params.get("after");
-                    let now_ms = Utc::now().timestamp_millis();
+                    let now_ms = Timestamp::now().as_millisecond();
 
                     let data = if after_id.is_none() {
                         vec![
@@ -3431,8 +3494,8 @@ async fn test_request_trades_multiple_trades_same_id() {
     }
 
     // Request with time range to trigger multi-page pagination
-    let start = Utc::now() - ChronoDuration::hours(1);
-    let end = Utc::now();
+    let start = Timestamp::now() - SignedDuration::from_hours(1);
+    let end = Timestamp::now();
     let trades = client
         .request_trades(
             InstrumentId::from("BTC-USD.OKX"),
@@ -3750,7 +3813,7 @@ async fn test_http_request_algo_order_status_report_parses_close_fraction_condit
 
 #[rstest]
 #[tokio::test]
-async fn test_http_request_algo_order_status_report_queries_attached_oco_with_ord_type() {
+async fn test_http_request_algo_order_status_report_queries_attached_oco_details() {
     let state = Arc::new(TestServerState::default());
     let addr = start_test_server(state.clone()).await;
     let base_url = format!("http://{addr}");
@@ -3787,22 +3850,178 @@ async fn test_http_request_algo_order_status_report_queries_attached_oco_with_or
         report.client_order_id,
         Some(ClientOrderId::from("O-attached-oco"))
     );
-    assert!(report.trigger_price.is_some());
+    assert_eq!(report.trigger_price, Some(Price::from("41000")));
 
+    let details_queries = state.algo_details_queries.lock().await.clone();
     let pending_queries = state.algo_pending_queries.lock().await.clone();
+    let history_queries = state.algo_history_queries.lock().await.clone();
+
+    assert_eq!(details_queries.len(), 1);
+    assert_eq!(
+        details_queries[0].get("algoClOrdId").map(String::as_str),
+        Some("O-attached-oco")
+    );
+    assert!(pending_queries.is_empty());
+    assert!(history_queries.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_request_algo_order_status_reports_routes_live_state_to_pending() {
+    let state = Arc::new(TestServerState::default());
+    let addr = start_test_server(state.clone()).await;
+    let base_url = format!("http://{addr}");
+
+    let client = OKXHttpClient::with_credentials(
+        Some("test_key".to_string()),
+        Some("test_secret".to_string()),
+        Some("test_passphrase".to_string()),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        OKXEnvironment::Live,
+        None,
+    )
+    .unwrap();
+
+    for instrument in load_swap_instruments_any() {
+        client.cache_instrument(instrument);
+    }
+
+    let reports = client
+        .request_algo_order_status_reports(
+            AccountId::new("OKX-001"),
+            Some(OKXInstrumentType::Swap),
+            None,
+            None,
+            None,
+            Some(OKXAlgoOrderStatus::Live),
+            Some(100),
+        )
+        .await
+        .unwrap();
+    let pending_queries = state.algo_pending_queries.lock().await.clone();
+    let history_queries = state.algo_history_queries.lock().await.clone();
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].order_status, OrderStatus::Accepted);
+    assert!(!pending_queries.is_empty());
     assert!(
         pending_queries
             .iter()
-            .any(|query| query.get("ordType").map(String::as_str) == Some("oco")),
-        "expected at least one pending algo query with ordType=oco, found {pending_queries:?}",
+            .all(|query| !query.contains_key("state"))
     );
+    assert!(history_queries.is_empty());
+}
 
-    // algoClOrdId-only lookup must skip history: OKX rejects it with 50015.
+#[rstest]
+#[tokio::test]
+async fn test_http_request_algo_order_status_reports_routes_canceled_state_to_history() {
+    let state = Arc::new(TestServerState::default());
+    let addr = start_test_server(state.clone()).await;
+    let base_url = format!("http://{addr}");
+
+    let client = OKXHttpClient::with_credentials(
+        Some("test_key".to_string()),
+        Some("test_secret".to_string()),
+        Some("test_passphrase".to_string()),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        OKXEnvironment::Live,
+        None,
+    )
+    .unwrap();
+
+    for instrument in load_swap_instruments_any() {
+        client.cache_instrument(instrument);
+    }
+
+    let reports = client
+        .request_algo_order_status_reports(
+            AccountId::new("OKX-001"),
+            Some(OKXInstrumentType::Swap),
+            None,
+            None,
+            None,
+            Some(OKXAlgoOrderStatus::Canceled),
+            Some(100),
+        )
+        .await
+        .unwrap();
+    let pending_queries = state.algo_pending_queries.lock().await.clone();
     let history_queries = state.algo_history_queries.lock().await.clone();
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].order_status, OrderStatus::Canceled);
+    assert!(pending_queries.is_empty());
+    assert!(!history_queries.is_empty());
     assert!(
-        history_queries.is_empty(),
-        "expected no algo history queries for an algoClOrdId-only lookup, found {history_queries:?}",
+        history_queries
+            .iter()
+            .all(|query| { query.get("state").map(String::as_str) == Some("canceled") })
     );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_request_algo_order_status_reports_uses_details_for_exact_lookup() {
+    let state = Arc::new(TestServerState::default());
+    let addr = start_test_server(state.clone()).await;
+    let base_url = format!("http://{addr}");
+
+    let client = OKXHttpClient::with_credentials(
+        Some("test_key".to_string()),
+        Some("test_secret".to_string()),
+        Some("test_passphrase".to_string()),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        OKXEnvironment::Live,
+        None,
+    )
+    .unwrap();
+
+    for instrument in load_swap_instruments_any() {
+        client.cache_instrument(instrument);
+    }
+
+    let reports = client
+        .request_algo_order_status_reports(
+            AccountId::new("OKX-001"),
+            None,
+            Some(InstrumentId::from("ETH-USDT-SWAP.OKX")),
+            Some("987654321".to_string()),
+            None,
+            None,
+            Some(1),
+        )
+        .await
+        .unwrap();
+    let details_queries = state.algo_details_queries.lock().await.clone();
+    let pending_queries = state.algo_pending_queries.lock().await.clone();
+    let history_queries = state.algo_history_queries.lock().await.clone();
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].venue_order_id.as_str(), "ord_456");
+    assert_eq!(
+        reports[0].client_order_id,
+        Some(ClientOrderId::from("cl_ord_123"))
+    );
+    assert_eq!(reports[0].order_status, OrderStatus::Triggered);
+    assert_eq!(details_queries.len(), 1);
+    assert_eq!(
+        details_queries[0].get("algoId").map(String::as_str),
+        Some("987654321")
+    );
+    assert!(pending_queries.is_empty());
+    assert!(history_queries.is_empty());
 }
 
 #[rstest]
@@ -3974,6 +4193,9 @@ async fn test_http_place_order_with_attached_tp_sl_uses_single_oco_payload() {
                 new_callback_spread: None,
                 new_active_px: None,
             }]),
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -5041,6 +5263,463 @@ async fn test_request_book_snapshot() {
 }
 
 #[tokio::test]
+async fn test_rpi_rest_book_fixture_and_reachable_client_paths() {
+    let queries = Arc::new(tokio::sync::Mutex::new(
+        Vec::<HashMap<String, String>>::new(),
+    ));
+    let captured_queries = queries.clone();
+    let router = Router::new().route(
+        "/api/v5/market/books-rpi",
+        get(move |Query(params): Query<HashMap<String, String>>| {
+            let queries = captured_queries.clone();
+            async move {
+                queries.lock().await.push(params);
+                Json(load_test_data("http_get_rpi_order_book.json")).into_response()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router.into_make_service())
+            .await
+            .unwrap();
+    });
+    wait_for_server(addr, "/api/v5/market/books-rpi?instId=BTC-USD&sz=2").await;
+
+    let base_url = format!("http://{addr}");
+    let raw = OKXRawHttpClient::new(
+        Some(base_url.clone()),
+        60,
+        3,
+        1000,
+        10_000,
+        OKXEnvironment::Live,
+        None,
+    )
+    .unwrap();
+    let snapshots = raw
+        .get_rpi_order_book(GetRpiOrderBookParams {
+            inst_id: "BTC-USD".to_string(),
+            sz: Some(2),
+        })
+        .await
+        .unwrap();
+    let snapshot = &snapshots[0];
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshot.asks.len(), 2);
+    assert_eq!(snapshot.bids.len(), 2);
+    assert_eq!(snapshot.asks[0].0.to_string(), "64620");
+    assert_eq!(snapshot.asks[0].1.to_string(), "0.1652224");
+    assert_eq!(snapshot.asks[0].2.to_string(), "0.1652224");
+    assert_eq!(snapshot.asks[0].3, 5);
+    assert_eq!(snapshot.bids[0].0.to_string(), "64619.9");
+    assert_eq!(snapshot.bids[0].1.to_string(), "3.48451281");
+    assert_eq!(snapshot.bids[0].2.to_string(), "3.48451281");
+    assert_eq!(snapshot.bids[0].3, 26);
+    assert_eq!(snapshot.ts, 1_785_406_077_001);
+    assert_eq!(snapshot.seq_id, 79_377_292_848);
+
+    let client = OKXHttpClient::new(
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        OKXEnvironment::Live,
+        None,
+    )
+    .unwrap();
+    client.cache_instrument(load_instruments_any().remove(0));
+    let book = client
+        .request_rpi_book_snapshot(InstrumentId::from("BTC-USD.OKX"), Some(2))
+        .await
+        .unwrap();
+    let queries = queries.lock().await;
+
+    assert_eq!(book.bids(None).count(), 2);
+    assert_eq!(book.asks(None).count(), 2);
+    assert_eq!(book.best_bid_price(), Some(Price::from("64619.9")));
+    assert_eq!(book.best_ask_price(), Some(Price::from("64620")));
+    assert_eq!(queries.len(), 3);
+    assert_eq!(
+        queries[1].get("instId").map(String::as_str),
+        Some("BTC-USD")
+    );
+    assert_eq!(queries[1].get("sz").map(String::as_str), Some("2"));
+    assert_eq!(
+        queries[2].get("instId").map(String::as_str),
+        Some("BTC-USD")
+    );
+    assert_eq!(queries[2].get("sz").map(String::as_str), Some("2"));
+}
+
+#[tokio::test]
+async fn test_rpi_rest_single_batch_place_and_amend_client_paths() {
+    let bodies = Arc::new(tokio::sync::Mutex::new(HashMap::<String, Value>::new()));
+    let response = || {
+        Json(json!({
+            "code": "0",
+            "msg": "",
+            "data": [{
+                "ordId": "2500000000000000001",
+                "clOrdId": "ORPI001",
+                "ordType": "rpi",
+                "sCode": "0",
+                "sMsg": ""
+            }]
+        }))
+    };
+    let place_bodies = bodies.clone();
+    let batch_place_bodies = bodies.clone();
+    let amend_bodies = bodies.clone();
+    let batch_amend_bodies = bodies.clone();
+    let router = Router::new()
+        .route(
+            "/api/v5/trade/order",
+            post(move |Json(body): Json<Value>| {
+                let bodies = place_bodies.clone();
+                async move {
+                    bodies.lock().await.insert("place".to_string(), body);
+                    response()
+                }
+            }),
+        )
+        .route(
+            "/api/v5/trade/batch-orders",
+            post(move |Json(body): Json<Value>| {
+                let bodies = batch_place_bodies.clone();
+                async move {
+                    bodies.lock().await.insert("batch-place".to_string(), body);
+                    response()
+                }
+            }),
+        )
+        .route(
+            "/api/v5/trade/amend-order",
+            post(move |Json(body): Json<Value>| {
+                let bodies = amend_bodies.clone();
+                async move {
+                    bodies.lock().await.insert("amend".to_string(), body);
+                    response()
+                }
+            }),
+        )
+        .route(
+            "/api/v5/trade/amend-batch-orders",
+            post(move |Json(body): Json<Value>| {
+                let bodies = batch_amend_bodies.clone();
+                async move {
+                    bodies.lock().await.insert("batch-amend".to_string(), body);
+                    response()
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let client = OKXHttpClient::with_credentials(
+        Some("test_key".to_string()),
+        Some("test_secret".to_string()),
+        Some("test_passphrase".to_string()),
+        Some(format!("http://{addr}")),
+        60,
+        3,
+        1000,
+        10_000,
+        OKXEnvironment::Live,
+        None,
+    )
+    .unwrap();
+    client.cache_instrument(load_instruments_any().remove(0));
+
+    let error = client
+        .place_order_with_domain_types(
+            InstrumentId::from("BTC-USD.OKX"),
+            OKXTradeMode::Cash,
+            ClientOrderId::from("ORPI-MARKET"),
+            OrderSide::Sell,
+            OrderType::Market,
+            Quantity::from("0.25"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+    match error {
+        OKXHttpError::ValidationError(message) => {
+            assert_eq!(message, "OKX RPI orders require a limit order");
+        }
+        other => panic!("Expected RPI validation error, was {other:?}"),
+    }
+
+    let place = OKXPlaceOrderRequest {
+        inst_id: "OMI-USD".to_string(),
+        td_mode: OKXTradeMode::Cash,
+        ccy: None,
+        cl_ord_id: Some("ORPI001".to_string()),
+        tag: None,
+        side: OKXSide::Sell,
+        pos_side: None,
+        ord_type: OKXOrderType::Rpi,
+        sz: "250000".to_string(),
+        px: Some("0.0001600".to_string()),
+        px_usd: None,
+        px_vol: None,
+        reduce_only: None,
+        tgt_ccy: None,
+        attach_algo_ords: None,
+        speed_bump: None,
+        outcome: None,
+        slippage_pct: None,
+        rpi_taker_access: Some(true),
+        rpi_px_round: Some(false),
+    };
+    let amend = OKXAmendOrderRequest {
+        inst_id: "OMI-USD".to_string(),
+        ord_id: Some("2500000000000000001".to_string()),
+        cl_ord_id: None,
+        req_id: Some("RPI-AMEND-1".to_string()),
+        new_sz: Some("275000".to_string()),
+        new_px: Some("0.0001599".to_string()),
+        rpi_taker_access: Some(false),
+        rpi_px_round: Some(true),
+    };
+
+    let single_place = client.place_order(place.clone()).await.unwrap();
+    let batch_place = client.place_orders(vec![place]).await.unwrap();
+    let single_amend = client.amend_order(amend.clone()).await.unwrap();
+    let batch_amend = client.amend_orders(vec![amend]).await.unwrap();
+    let bodies = bodies.lock().await;
+
+    assert_eq!(single_place.ord_type, Some(OKXOrderType::Rpi));
+    assert_eq!(batch_place[0].ord_type, Some(OKXOrderType::Rpi));
+    assert_eq!(single_amend.ord_type, Some(OKXOrderType::Rpi));
+    assert_eq!(batch_amend[0].ord_type, Some(OKXOrderType::Rpi));
+    assert_eq!(bodies["place"]["ordType"], "rpi");
+    assert_eq!(bodies["place"]["rpiTakerAccess"], true);
+    assert_eq!(bodies["place"]["rpiPxRound"], false);
+    assert_eq!(bodies["batch-place"][0], bodies["place"]);
+    assert_eq!(bodies["amend"]["rpiTakerAccess"], false);
+    assert_eq!(bodies["amend"]["rpiPxRound"], true);
+    assert_eq!(bodies["batch-amend"][0], bodies["amend"]);
+}
+
+#[tokio::test]
+async fn test_rpi_rest_batch_preserves_partial_success_items() {
+    let router = Router::new()
+        .route(
+            "/api/v5/trade/batch-orders",
+            post(|| async {
+                Json(json!({
+                    "code": "2",
+                    "msg": "Bulk operation partially successful",
+                    "data": [
+                        {
+                            "ordId": "2500000000000000001",
+                            "clOrdId": "ORPI001",
+                            "sCode": "0",
+                            "sMsg": "Order placed"
+                        },
+                        {
+                            "ordId": "",
+                            "clOrdId": "ORPI002",
+                            "sCode": "51000",
+                            "sMsg": "Parameter rpiPxRound error"
+                        }
+                    ]
+                }))
+            }),
+        )
+        .route(
+            "/api/v5/trade/amend-batch-orders",
+            post(|| async {
+                Json(json!({
+                    "code": "2",
+                    "msg": "Bulk operation partially successful",
+                    "data": [
+                        {
+                            "ordId": "2500000000000000001",
+                            "clOrdId": "ORPI001",
+                            "reqId": "RPI-AMEND-1",
+                            "sCode": "0",
+                            "sMsg": "Order amended"
+                        },
+                        {
+                            "ordId": "2500000000000000002",
+                            "clOrdId": "ORPI002",
+                            "reqId": "RPI-AMEND-2",
+                            "sCode": "51000",
+                            "sMsg": "Parameter rpiPxRound error"
+                        }
+                    ]
+                }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let client = OKXHttpClient::with_credentials(
+        Some("test_key".to_string()),
+        Some("test_secret".to_string()),
+        Some("test_passphrase".to_string()),
+        Some(format!("http://{addr}")),
+        60,
+        3,
+        1000,
+        10_000,
+        OKXEnvironment::Live,
+        None,
+    )
+    .unwrap();
+    let place = |client_order_id: &str| OKXPlaceOrderRequest {
+        inst_id: "OMI-USD".to_string(),
+        td_mode: OKXTradeMode::Cash,
+        ccy: None,
+        cl_ord_id: Some(client_order_id.to_string()),
+        tag: None,
+        side: OKXSide::Sell,
+        pos_side: None,
+        ord_type: OKXOrderType::Rpi,
+        sz: "250000".to_string(),
+        px: Some("0.0001600".to_string()),
+        px_usd: None,
+        px_vol: None,
+        reduce_only: None,
+        tgt_ccy: None,
+        attach_algo_ords: None,
+        speed_bump: None,
+        outcome: None,
+        slippage_pct: None,
+        rpi_taker_access: Some(false),
+        rpi_px_round: Some(true),
+    };
+    let amend = |client_order_id: &str, request_id: &str| OKXAmendOrderRequest {
+        inst_id: "OMI-USD".to_string(),
+        ord_id: None,
+        cl_ord_id: Some(client_order_id.to_string()),
+        req_id: Some(request_id.to_string()),
+        new_sz: Some("275000".to_string()),
+        new_px: Some("0.0001599".to_string()),
+        rpi_taker_access: Some(false),
+        rpi_px_round: Some(true),
+    };
+
+    let place_responses = client
+        .place_orders(vec![place("ORPI001"), place("ORPI002")])
+        .await
+        .unwrap();
+    let amend_responses = client
+        .amend_orders(vec![
+            amend("ORPI001", "RPI-AMEND-1"),
+            amend("ORPI002", "RPI-AMEND-2"),
+        ])
+        .await
+        .unwrap();
+
+    assert_eq!(place_responses.len(), 2);
+    assert_eq!(place_responses[0].cl_ord_id, Some(Ustr::from("ORPI001")));
+    assert_eq!(place_responses[0].s_code.as_deref(), Some("0"));
+    assert_eq!(place_responses[0].s_msg.as_deref(), Some("Order placed"));
+    assert_eq!(place_responses[1].cl_ord_id, Some(Ustr::from("ORPI002")));
+    assert_eq!(place_responses[1].s_code.as_deref(), Some("51000"));
+    assert_eq!(
+        place_responses[1].s_msg.as_deref(),
+        Some("Parameter rpiPxRound error"),
+    );
+    assert_eq!(amend_responses.len(), 2);
+    assert_eq!(amend_responses[0].req_id, Some(Ustr::from("RPI-AMEND-1")));
+    assert_eq!(amend_responses[0].s_code.as_deref(), Some("0"));
+    assert_eq!(amend_responses[0].s_msg.as_deref(), Some("Order amended"),);
+    assert_eq!(amend_responses[1].req_id, Some(Ustr::from("RPI-AMEND-2")));
+    assert_eq!(amend_responses[1].s_code.as_deref(), Some("51000"));
+    assert_eq!(
+        amend_responses[1].s_msg.as_deref(),
+        Some("Parameter rpiPxRound error"),
+    );
+}
+
+#[tokio::test]
+async fn test_rpi_account_instrument_permission_reachable() {
+    let mut response = load_test_data("http_get_instruments_spot.json");
+    response["data"][0]["instId"] = json!("ADA-USDT");
+    response["data"][0]["rpi"] = json!("2");
+    response["data"][0]["elp"] = json!("1");
+    let router = Router::new().route(
+        "/api/v5/account/instruments",
+        get(
+            move |headers: HeaderMap, Query(query): Query<HashMap<String, String>>| {
+                let response = response.clone();
+                async move {
+                    assert!(has_auth_headers(&headers));
+                    assert_eq!(query.get("instType").map(String::as_str), Some("SPOT"));
+                    assert_eq!(query.get("instId").map(String::as_str), Some("ADA-USDT"));
+                    Json(response)
+                }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router.into_make_service())
+            .await
+            .unwrap();
+    });
+    let client = OKXRawHttpClient::with_credentials(
+        "test_key".to_string(),
+        "test_secret".to_string(),
+        "test_passphrase".to_string(),
+        format!("http://{addr}"),
+        60,
+        3,
+        1000,
+        10_000,
+        OKXEnvironment::Live,
+        None,
+    )
+    .unwrap();
+
+    let instruments = client
+        .get_account_instruments(
+            GetInstrumentsParamsBuilder::default()
+                .inst_type(OKXInstrumentType::Spot)
+                .inst_id("ADA-USDT")
+                .build()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(instruments[0].inst_id.as_str(), "ADA-USDT");
+    assert_eq!(instruments[0].rpi, Some(OKXRpiPermission::Permitted));
+}
+
+#[tokio::test]
 async fn test_request_funding_rates() {
     let router = Router::new()
         .route(
@@ -5167,6 +5846,42 @@ async fn test_http_request_price_limit_uses_instrument_symbol() {
 
     let queries = state.price_limit_queries.lock().await;
     assert_eq!(queries.len(), 1);
+    assert_eq!(queries[0].get("instId"), Some(&"BTC-USDT-SWAP".to_string()));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_request_mark_price_uses_instrument_type_and_symbol() {
+    let state = Arc::new(TestServerState::default());
+    let addr = start_test_server(state.clone()).await;
+    let base_url = format!("http://{addr}");
+    let client = OKXHttpClient::new(
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        OKXEnvironment::Live,
+        None,
+    )
+    .unwrap();
+
+    for instrument in load_swap_instruments_any() {
+        client.cache_instrument(instrument);
+    }
+
+    let mark = client
+        .request_mark_price(InstrumentId::from("BTC-USDT-SWAP.OKX"))
+        .await
+        .unwrap();
+
+    assert_eq!(mark.instrument_id, InstrumentId::from("BTC-USDT-SWAP.OKX"));
+    assert_eq!(mark.value, Price::from("84660.1"));
+    assert_eq!(mark.ts_event, UnixNanos::from(1_744_590_349_506_000_000));
+
+    let queries = state.mark_price_queries.lock().await;
+    assert_eq!(queries.len(), 1);
+    assert_eq!(queries[0].get("instType"), Some(&"SWAP".to_string()));
     assert_eq!(queries[0].get("instId"), Some(&"BTC-USDT-SWAP".to_string()));
 }
 

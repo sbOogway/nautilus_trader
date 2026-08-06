@@ -21,13 +21,14 @@
 //! downstream reconciliation.
 
 use std::{
-    collections::VecDeque,
+    fmt::Debug,
     hash::Hash,
     sync::{Arc, Mutex},
 };
 
 use ahash::AHashMap;
 use dashmap::DashMap;
+use nautilus_common::cache::fifo::FifoCache;
 use nautilus_core::{AtomicMap, MUTEX_POISONED, UUID4, UnixNanos, time::AtomicTime};
 use nautilus_live::ExecutionEventEmitter;
 use nautilus_model::{
@@ -49,7 +50,7 @@ use crate::{
             OKX_FIELD_CLORDID, OKX_FIELD_SCODE, OKX_FIELD_SMSG, OKX_FIELD_SUBCODE,
             OKX_POST_ONLY_CANCEL_REASON, OKX_POST_ONLY_CANCEL_SOURCE, OKX_SUCCESS_CODE,
         },
-        enums::OKXOrderStatus,
+        enums::{OKXOrderStatus, OKXOrderType},
         parse::{
             is_market_price, parse_client_order_id, parse_millisecond_timestamp, parse_price,
             parse_quantity,
@@ -59,7 +60,7 @@ use crate::{
     websocket::{
         client::PendingOrderInfo,
         enums::OKXWsOperation,
-        handler::is_post_only_auto_cancel,
+        handler::{is_post_only_auto_cancel, is_unfilled_rpi_cancel},
         messages::{ExecutionReport, OKXOrderMsg, OKXWsMessage},
         parse::{
             OrderStateSnapshot, ParsedOrderEvent, parse_algo_order_msg, parse_order_event,
@@ -72,87 +73,34 @@ use crate::{
 /// Maximum entries held by the dedup sets before the oldest is evicted.
 const DEDUP_CAPACITY: usize = 10_000;
 
-/// Bounded deduplication set with FIFO eviction.
-///
-/// Insertions are tagged with a sequence number so a stale marker left
-/// behind by `remove` or by re-insertion of the same key cannot evict the
-/// live entry when it reaches the front of the queue.
 #[derive(Debug)]
-pub struct BoundedDedup<K> {
-    inner: Mutex<BoundedDedupInner<K>>,
-    capacity: usize,
-}
-
-#[derive(Debug)]
-struct BoundedDedupInner<K> {
-    set: AHashMap<K, u64>,
-    queue: VecDeque<(K, u64)>,
-    next_seq: u64,
-}
-
-impl<K> BoundedDedup<K>
+struct DedupCache<K>
 where
-    K: Eq + Hash + Clone,
+    K: Clone + Debug + Eq + Hash,
 {
-    /// Creates a new dedup set with the given maximum capacity.
-    pub fn new(capacity: usize) -> Self {
+    inner: Mutex<FifoCache<K, DEDUP_CAPACITY>>,
+}
+
+impl<K> DedupCache<K>
+where
+    K: Clone + Debug + Eq + Hash,
+{
+    fn new() -> Self {
         Self {
-            inner: Mutex::new(BoundedDedupInner {
-                set: AHashMap::with_capacity(capacity),
-                queue: VecDeque::with_capacity(capacity),
-                next_seq: 0,
-            }),
-            capacity,
+            inner: Mutex::new(FifoCache::new()),
         }
     }
 
-    /// Returns `true` if the key is currently present.
-    #[allow(clippy::missing_panics_doc, reason = "mutex poisoning is not expected")]
-    pub fn contains(&self, key: &K) -> bool {
-        self.inner
-            .lock()
-            .expect(MUTEX_POISONED)
-            .set
-            .contains_key(key)
+    fn contains(&self, key: &K) -> bool {
+        self.inner.lock().expect(MUTEX_POISONED).contains(key)
     }
 
-    /// Inserts the key. Returns `true` when the key was already present
-    /// (duplicate) and `false` when this call was the first insertion.
-    #[allow(clippy::missing_panics_doc, reason = "mutex poisoning is not expected")]
-    pub fn check_and_insert(&self, key: K) -> bool {
-        let mut inner = self.inner.lock().expect(MUTEX_POISONED);
-        if inner.set.contains_key(&key) {
-            return true;
-        }
-        let seq = inner.next_seq;
-        inner.next_seq = inner.next_seq.wrapping_add(1);
-        inner.set.insert(key.clone(), seq);
-        inner.queue.push_back((key, seq));
-        while inner.queue.len() > self.capacity
-            && let Some((old_key, old_seq)) = inner.queue.pop_front()
-        {
-            // Skip if a fresher insertion has superseded this marker.
-            if inner.set.get(&old_key) == Some(&old_seq) {
-                inner.set.remove(&old_key);
-            }
-        }
-        false
+    fn insert(&self, key: K) -> bool {
+        self.inner.lock().expect(MUTEX_POISONED).insert(key)
     }
 
-    /// Inserts the key without reporting whether it was already present.
-    pub fn insert(&self, key: K) {
-        let _ = self.check_and_insert(key);
-    }
-
-    /// Drops the key from the set if present. Returns `true` if it was found.
-    #[allow(clippy::missing_panics_doc, reason = "mutex poisoning is not expected")]
-    pub fn remove(&self, key: &K) -> bool {
-        self.inner
-            .lock()
-            .expect(MUTEX_POISONED)
-            .set
-            .remove(key)
-            .is_some()
+    fn remove(&self, key: &K) {
+        self.inner.lock().expect(MUTEX_POISONED).remove(key);
     }
 }
 
@@ -175,28 +123,30 @@ pub struct OrderIdentity {
 #[derive(Debug)]
 pub struct WsDispatchState {
     pub order_identities: DashMap<ClientOrderId, OrderIdentity>,
-    pub emitted_accepted: BoundedDedup<ClientOrderId>,
-    pub triggered_orders: BoundedDedup<ClientOrderId>,
-    pub filled_orders: BoundedDedup<ClientOrderId>,
-    pub terminal_orders: BoundedDedup<ClientOrderId>,
-    pub emitted_trades: BoundedDedup<TradeId>,
     pub(crate) pending_orders: Arc<DashMap<String, PendingOrderInfo>>,
     pub(crate) pending_cancels: Arc<DashMap<String, PendingOrderInfo>>,
     pub(crate) pending_amends: Arc<DashMap<String, PendingOrderInfo>>,
+    emitted_accepted: DedupCache<ClientOrderId>,
+    triggered_orders: DedupCache<ClientOrderId>,
+    filled_orders: DedupCache<ClientOrderId>,
+    terminal_orders: DedupCache<ClientOrderId>,
+    emitted_trades: DedupCache<TradeId>,
+    post_only_rejections: DedupCache<Ustr>,
 }
 
 impl Default for WsDispatchState {
     fn default() -> Self {
         Self {
             order_identities: DashMap::new(),
-            emitted_accepted: BoundedDedup::new(DEDUP_CAPACITY),
-            triggered_orders: BoundedDedup::new(DEDUP_CAPACITY),
-            filled_orders: BoundedDedup::new(DEDUP_CAPACITY),
-            terminal_orders: BoundedDedup::new(DEDUP_CAPACITY),
-            emitted_trades: BoundedDedup::new(DEDUP_CAPACITY),
             pending_orders: Arc::new(DashMap::new()),
             pending_cancels: Arc::new(DashMap::new()),
             pending_amends: Arc::new(DashMap::new()),
+            emitted_accepted: DedupCache::new(),
+            triggered_orders: DedupCache::new(),
+            filled_orders: DedupCache::new(),
+            terminal_orders: DedupCache::new(),
+            emitted_trades: DedupCache::new(),
+            post_only_rejections: DedupCache::new(),
         }
     }
 }
@@ -219,26 +169,74 @@ impl WsDispatchState {
 }
 
 impl WsDispatchState {
-    pub(crate) fn insert_accepted(&self, cid: ClientOrderId) {
-        self.emitted_accepted.insert(cid);
+    /// Returns whether acceptance was already emitted for the order.
+    #[must_use]
+    pub fn contains_accepted(&self, cid: &ClientOrderId) -> bool {
+        self.emitted_accepted.contains(cid)
     }
 
-    pub(crate) fn insert_triggered(&self, cid: ClientOrderId) {
-        self.triggered_orders.insert(cid);
+    /// Records that acceptance was emitted for the order.
+    pub fn insert_accepted(&self, cid: ClientOrderId) {
+        let _ = self.emitted_accepted.insert(cid);
     }
 
-    pub(crate) fn insert_filled(&self, cid: ClientOrderId) {
-        self.filled_orders.insert(cid);
+    /// Returns whether the order was already triggered.
+    #[must_use]
+    pub fn contains_triggered(&self, cid: &ClientOrderId) -> bool {
+        self.triggered_orders.contains(cid)
     }
 
-    pub(crate) fn insert_terminal(&self, cid: ClientOrderId) {
-        self.terminal_orders.insert(cid);
+    /// Records that the order was triggered.
+    pub fn insert_triggered(&self, cid: ClientOrderId) {
+        let _ = self.triggered_orders.insert(cid);
+    }
+
+    /// Returns whether the order was already filled.
+    #[must_use]
+    pub fn contains_filled(&self, cid: &ClientOrderId) -> bool {
+        self.filled_orders.contains(cid)
+    }
+
+    /// Records that the order was filled.
+    pub fn insert_filled(&self, cid: ClientOrderId) {
+        let _ = self.filled_orders.insert(cid);
+    }
+
+    /// Returns whether the order already reached a terminal state.
+    #[must_use]
+    pub fn contains_terminal(&self, cid: &ClientOrderId) -> bool {
+        self.terminal_orders.contains(cid)
+    }
+
+    /// Records that the order reached a terminal state.
+    pub fn insert_terminal(&self, cid: ClientOrderId) {
+        let _ = self.terminal_orders.insert(cid);
     }
 
     /// Returns `true` if this trade was already emitted (duplicate).
     /// Uses atomic insert to avoid TOCTOU races between concurrent streams.
     pub fn check_and_insert_trade(&self, trade_id: TradeId) -> bool {
-        self.emitted_trades.check_and_insert(trade_id)
+        !self.emitted_trades.insert(trade_id)
+    }
+
+    fn remove_accepted(&self, cid: &ClientOrderId) {
+        self.emitted_accepted.remove(cid);
+    }
+
+    fn remove_triggered(&self, cid: &ClientOrderId) {
+        self.triggered_orders.remove(cid);
+    }
+
+    fn remove_filled(&self, cid: &ClientOrderId) {
+        self.filled_orders.remove(cid);
+    }
+
+    fn insert_post_only_rejection(&self, order_id: Ustr) {
+        let _ = self.post_only_rejections.insert(order_id);
+    }
+
+    fn contains_post_only_rejection(&self, order_id: &Ustr) -> bool {
+        self.post_only_rejections.contains(order_id)
     }
 }
 
@@ -518,7 +516,9 @@ pub fn dispatch_ws_message(
         OKXWsMessage::ChannelData { channel, .. } => {
             log::debug!("Ignoring data channel message on execution client: {channel:?}");
         }
-        OKXWsMessage::BookData { .. } | OKXWsMessage::Instruments(_) => {
+        OKXWsMessage::BookData { .. }
+        | OKXWsMessage::RpiBookData { .. }
+        | OKXWsMessage::Instruments(_) => {
             log::debug!("Ignoring data message on execution client");
         }
         OKXWsMessage::Error(e) => {
@@ -606,15 +606,31 @@ fn dispatch_order_messages(
         };
 
         if let Some(ident) = identity {
-            if is_post_only_auto_cancel(msg) {
+            let is_post_only_cancel = is_post_only_auto_cancel(msg);
+
+            if is_post_only_cancel
+                || (!state.contains_accepted(&client_order_id) && is_unfilled_rpi_cancel(msg))
+            {
+                if is_post_only_cancel {
+                    state.insert_post_only_rejection(msg.ord_id);
+                }
+
                 let ts_event = parse_millisecond_timestamp(msg.u_time);
+                let reason = if msg.ord_type == OKXOrderType::Rpi {
+                    msg.cancel_source_reason
+                        .as_deref()
+                        .filter(|reason| !reason.is_empty())
+                        .unwrap_or("RPI order canceled before acceptance")
+                } else {
+                    "Post-only order would have taken liquidity"
+                };
                 let rejected = OrderRejected::new(
                     emitter.trader_id(),
                     ident.strategy_id,
                     instrument.id(),
                     client_order_id,
                     account_id,
-                    Ustr::from("Post-only order would have taken liquidity"),
+                    Ustr::from(reason),
                     UUID4::new(),
                     ts_event,
                     ts_init,
@@ -670,6 +686,11 @@ fn dispatch_order_messages(
                 }
                 Err(e) => log::error!("Failed to parse order event for {client_order_id}: {e}"),
             }
+        } else if is_post_only_auto_cancel(msg) && state.contains_post_only_rejection(&msg.ord_id) {
+            log::debug!(
+                "Skipping replayed post-only rejection for {client_order_id}: ord_id={}",
+                msg.ord_id
+            );
         } else {
             log::debug!(
                 "Untracked order {client_order_id} (ord_id={}), sending as report for reconciliation",
@@ -838,10 +859,10 @@ fn dispatch_parsed_order_event(
 
     match event {
         ParsedOrderEvent::Accepted(e) => {
-            if state.emitted_accepted.contains(&client_order_id)
-                || state.filled_orders.contains(&client_order_id)
-                || state.triggered_orders.contains(&client_order_id)
-                || state.terminal_orders.contains(&client_order_id)
+            if state.contains_accepted(&client_order_id)
+                || state.contains_filled(&client_order_id)
+                || state.contains_triggered(&client_order_id)
+                || state.contains_terminal(&client_order_id)
             {
                 log::debug!("Skipping duplicate Accepted for {client_order_id}");
                 return;
@@ -851,7 +872,7 @@ fn dispatch_parsed_order_event(
             emitter.send_order_event(OrderEventAny::Accepted(e));
         }
         ParsedOrderEvent::Triggered(e) => {
-            if state.filled_orders.contains(&client_order_id) {
+            if state.contains_filled(&client_order_id) {
                 log::debug!("Skipping stale Triggered for {client_order_id} (already filled)");
                 return;
             }
@@ -888,8 +909,8 @@ fn dispatch_parsed_order_event(
                 state,
                 ts_init,
             );
-            state.triggered_orders.remove(&client_order_id);
-            state.filled_orders.remove(&client_order_id);
+            state.remove_triggered(&client_order_id);
+            state.remove_filled(&client_order_id);
             is_terminal = true;
             emitter.send_order_event(OrderEventAny::Canceled(e));
         }
@@ -903,8 +924,8 @@ fn dispatch_parsed_order_event(
                 state,
                 ts_init,
             );
-            state.triggered_orders.remove(&client_order_id);
-            state.filled_orders.remove(&client_order_id);
+            state.remove_triggered(&client_order_id);
+            state.remove_filled(&client_order_id);
             is_terminal = true;
             emitter.send_order_event(OrderEventAny::Expired(e));
         }
@@ -941,7 +962,7 @@ fn dispatch_parsed_order_event(
                     ts_init,
                 );
                 state.insert_filled(client_order_id);
-                state.triggered_orders.remove(&client_order_id);
+                state.remove_triggered(&client_order_id);
                 let filled = fill_report_to_order_filled(
                     &fill_report,
                     emitter.trader_id(),
@@ -964,7 +985,7 @@ fn dispatch_parsed_order_event(
     if is_terminal {
         state.insert_terminal(client_order_id);
         state.order_identities.remove(&client_order_id);
-        state.emitted_accepted.remove(&client_order_id);
+        state.remove_accepted(&client_order_id);
         order_state_cache.remove(&client_order_id);
         // Keep fee_cache and filled_qty_cache entries: replayed terminal
         // messages go through the untracked report path and need prior
@@ -983,7 +1004,7 @@ fn ensure_accepted_emitted(
     state: &WsDispatchState,
     ts_init: UnixNanos,
 ) {
-    if state.emitted_accepted.contains(&client_order_id) {
+    if state.contains_accepted(&client_order_id) {
         return;
     }
     state.insert_accepted(client_order_id);
@@ -1174,9 +1195,9 @@ pub fn dispatch_execution_reports(
                         // Guard form reformats awkwardly across multiple lines
                         #[allow(clippy::collapsible_match)]
                         OrderStatus::Accepted => {
-                            if state.terminal_orders.contains(&cid)
-                                || state.filled_orders.contains(&cid)
-                                || state.triggered_orders.contains(&cid)
+                            if state.contains_terminal(&cid)
+                                || state.contains_filled(&cid)
+                                || state.contains_triggered(&cid)
                             {
                                 log::debug!(
                                     "Skipping stale OrderStatusReport(Accepted) \
@@ -1186,7 +1207,7 @@ pub fn dispatch_execution_reports(
                             }
                         }
                         OrderStatus::Triggered => {
-                            if state.filled_orders.contains(&cid) {
+                            if state.contains_filled(&cid) {
                                 log::debug!(
                                     "Skipping stale OrderStatusReport(Triggered) \
                                      for {cid} (already filled)"
@@ -1198,12 +1219,12 @@ pub fn dispatch_execution_reports(
                         OrderStatus::Filled => {
                             state.insert_filled(cid);
                             state.insert_terminal(cid);
-                            state.triggered_orders.remove(&cid);
+                            state.remove_triggered(&cid);
                         }
                         OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::Rejected => {
                             state.insert_terminal(cid);
-                            state.triggered_orders.remove(&cid);
-                            state.filled_orders.remove(&cid);
+                            state.remove_triggered(&cid);
+                            state.remove_filled(&cid);
                         }
                         _ => {}
                     }
@@ -1221,7 +1242,7 @@ pub fn dispatch_execution_reports(
 
                 if let Some(cid) = fill_report.client_order_id {
                     state.insert_filled(cid);
-                    state.triggered_orders.remove(&cid);
+                    state.remove_triggered(&cid);
                 }
                 emitter.send_fill_report(fill_report);
             }
@@ -1302,7 +1323,7 @@ pub fn emit_batch_cancel_failure(
 mod tests {
     use rstest::rstest;
 
-    use super::{BoundedDedup, format_order_response_reason};
+    use super::format_order_response_reason;
 
     #[rstest]
     #[case("51000", "Rejected", "", "Rejected")]
@@ -1321,79 +1342,5 @@ mod tests {
             format_order_response_reason(s_code, s_msg, sub_code),
             expected
         );
-    }
-
-    #[rstest]
-    fn test_bounded_dedup_check_and_insert_returns_false_on_first_insert() {
-        let dedup = BoundedDedup::<u32>::new(4);
-        assert!(!dedup.check_and_insert(1));
-        assert!(dedup.contains(&1));
-    }
-
-    #[rstest]
-    fn test_bounded_dedup_check_and_insert_returns_true_on_duplicate() {
-        let dedup = BoundedDedup::<u32>::new(4);
-        dedup.insert(1);
-        assert!(dedup.check_and_insert(1));
-    }
-
-    #[rstest]
-    fn test_bounded_dedup_evicts_oldest_on_overflow() {
-        let dedup = BoundedDedup::<u32>::new(3);
-        dedup.insert(1);
-        dedup.insert(2);
-        dedup.insert(3);
-        dedup.insert(4);
-
-        assert!(!dedup.contains(&1));
-        assert!(dedup.contains(&2));
-        assert!(dedup.contains(&3));
-        assert!(dedup.contains(&4));
-    }
-
-    #[rstest]
-    fn test_bounded_dedup_evicted_key_is_not_treated_as_duplicate() {
-        let dedup = BoundedDedup::<u32>::new(2);
-        dedup.insert(1);
-        dedup.insert(2);
-        dedup.insert(3);
-
-        assert!(!dedup.check_and_insert(1));
-        assert!(dedup.contains(&1));
-    }
-
-    #[rstest]
-    fn test_bounded_dedup_remove_drops_entry() {
-        let dedup = BoundedDedup::<u32>::new(4);
-        dedup.insert(1);
-        assert!(dedup.remove(&1));
-        assert!(!dedup.contains(&1));
-        assert!(!dedup.remove(&1));
-    }
-
-    #[rstest]
-    fn test_bounded_dedup_remove_then_reinsert_does_not_double_count() {
-        let dedup = BoundedDedup::<u32>::new(2);
-        for k in 0u32..1000 {
-            dedup.insert(k);
-            dedup.remove(&k);
-        }
-        assert!(!dedup.contains(&0));
-        assert!(!dedup.contains(&500));
-    }
-
-    #[rstest]
-    fn test_bounded_dedup_reinsert_survives_stale_marker_eviction() {
-        let dedup = BoundedDedup::<u32>::new(3);
-        dedup.insert(1);
-        dedup.remove(&1);
-
-        dedup.insert(2);
-        dedup.insert(3);
-        dedup.insert(1);
-
-        assert!(dedup.contains(&1));
-        assert!(dedup.contains(&2));
-        assert!(dedup.contains(&3));
     }
 }

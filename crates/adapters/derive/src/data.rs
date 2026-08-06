@@ -32,7 +32,7 @@ use dashmap::DashMap;
 use nautilus_common::{
     cache::{InstrumentLookupError, quote::QuoteCache},
     clients::DataClient,
-    live::{get_runtime, runner::get_data_event_sender},
+    live::{get_runtime, runner::get_data_event_sender, task::TaskHandles},
     messages::{
         DataEvent,
         data::{
@@ -55,7 +55,7 @@ use nautilus_core::{
     time::{AtomicTime, get_atomic_clock_realtime},
 };
 use nautilus_model::{
-    data::{Bar, Data, ForwardPrice, OrderBookDeltas_API, QuoteTick},
+    data::{Bar, Data, ForwardPrice, QuoteTick},
     enums::{AggregationSource, BookType, PriceType},
     identifiers::{ClientId, InstrumentId, Venue},
     instruments::{Instrument, InstrumentAny},
@@ -103,7 +103,7 @@ pub struct DeriveDataClient {
     is_connected: Arc<AtomicBool>,
     cancellation_token: CancellationToken,
     ws_stream_handle: Option<JoinHandle<()>>,
-    pending_tasks: Mutex<Vec<JoinHandle<()>>>,
+    pending_tasks: TaskHandles,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     instruments: Arc<AtomicMap<InstrumentId, InstrumentAny>>,
     active_book_delta_channels: Arc<AtomicMap<InstrumentId, String>>,
@@ -161,7 +161,7 @@ impl DeriveDataClient {
             is_connected: Arc::new(AtomicBool::new(false)),
             cancellation_token: CancellationToken::new(),
             ws_stream_handle: None,
-            pending_tasks: Mutex::new(Vec::new()),
+            pending_tasks: TaskHandles::default(),
             data_sender,
             instruments: Arc::new(AtomicMap::new()),
             active_book_delta_channels: Arc::new(AtomicMap::new()),
@@ -193,19 +193,16 @@ impl DeriveDataClient {
             }
         });
 
-        let mut tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
-        // Prune finished handles before pushing so the Vec doesn't grow
-        // unboundedly across long-running sessions.
-        tasks.retain(|handle| !handle.is_finished());
-        tasks.push(handle);
+        self.pending_tasks.push(handle);
     }
 
-    /// Aborts every tracked pending task; used by `disconnect` and `reset`.
-    fn abort_pending_tasks(&self) {
-        let tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
-        for handle in tasks.iter() {
+    /// Drains and aborts every tracked pending task.
+    fn abort_pending_tasks(&self) -> Vec<JoinHandle<()>> {
+        let tasks = self.pending_tasks.take_all();
+        for handle in &tasks {
             handle.abort();
         }
+        tasks
     }
 
     /// Clears every local subscription map. Called from `disconnect` and
@@ -335,7 +332,7 @@ impl DeriveDataClient {
                         ts_init,
                     ) {
                         Ok(deltas) => {
-                            Self::send_data(ctx, Data::Deltas(OrderBookDeltas_API::new(deltas)));
+                            Self::send_data(ctx, Data::Deltas(Box::new(deltas)));
                         }
                         Err(e) => log::warn!("Failed to parse Derive orderbook deltas: {e}"),
                     }
@@ -649,7 +646,7 @@ impl DataClient for DeriveDataClient {
         log::info!("Resetting Derive data client: {}", self.client_id);
         self.cancellation_token.cancel();
 
-        self.abort_pending_tasks();
+        drop(self.abort_pending_tasks());
 
         if let Some(handle) = self.ws_stream_handle.as_ref() {
             handle.abort();
@@ -694,8 +691,8 @@ impl DataClient for DeriveDataClient {
             {
                 log::error!("Error joining prior Derive WebSocket data task: {e:?}");
             }
-            self.abort_pending_tasks();
-            self.join_pending_tasks().await;
+            let pending_tasks = self.abort_pending_tasks();
+            self.join_pending_tasks(pending_tasks).await;
             self.clear_subscription_state();
             self.channel_subscriptions.clear_transitions();
             self.cancellation_token = CancellationToken::new();
@@ -747,8 +744,8 @@ impl DataClient for DeriveDataClient {
         {
             log::error!("Error joining Derive WebSocket data task: {e:?}");
         }
-        self.abort_pending_tasks();
-        self.join_pending_tasks().await;
+        let pending_tasks = self.abort_pending_tasks();
+        self.join_pending_tasks(pending_tasks).await;
 
         // Aborting in-flight subscribe tasks skips their on-error rollback,
         // so any `active_*` entries staged before spawn would leak across
@@ -1105,9 +1102,9 @@ impl DataClient for DeriveDataClient {
         let limit = request.limit.map(NonZeroUsize::get);
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
-        let from_timestamp = start.map(|dt| dt.timestamp_millis());
+        let from_timestamp = start.map(|dt| dt.as_millisecond());
         let to_timestamp = Some(match end {
-            Some(dt) => dt.timestamp_millis(),
+            Some(dt) => dt.as_millisecond(),
             None => i64::try_from(clock.get_time_ms())
                 .context("Derive current time exceeds i64 milliseconds")?,
         });
@@ -1215,8 +1212,8 @@ impl DataClient for DeriveDataClient {
         let limit = request.limit.map(NonZeroUsize::get);
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
-        let start_ms = start.map(|dt| dt.timestamp_millis());
-        let end_ms = end.map(|dt| dt.timestamp_millis());
+        let start_ms = start.map(|dt| dt.as_millisecond());
+        let end_ms = end.map(|dt| dt.as_millisecond());
 
         self.spawn_task("request_funding_rates", async move {
             let result = match http_client
@@ -1312,9 +1309,9 @@ impl DataClient for DeriveDataClient {
         // and start to one window of `limit` buckets (or 1000) before end.
         let request_time = clock.get_time_ns();
         let now_secs = (request_time.as_u64() / NANOSECONDS_IN_SECOND) as i64;
-        let end_ts = end.map_or(now_secs, |dt| dt.timestamp());
+        let end_ts = end.map_or(now_secs, |dt| dt.as_second());
         let default_span = i64::from(period) * limit.unwrap_or(DERIVE_CANDLES_DEFAULT_LIMIT) as i64;
-        let start_ts = start.map_or(end_ts - default_span, |dt| dt.timestamp());
+        let start_ts = start.map_or(end_ts - default_span, |dt| dt.as_second());
 
         self.spawn_task("request_bars", async move {
             // Venue caps each call at 5000 candles; walk backwards by shrinking
@@ -2199,12 +2196,7 @@ fn retain_channel_for_reconnect(
 }
 
 impl DeriveDataClient {
-    async fn join_pending_tasks(&self) {
-        let tasks = {
-            let mut tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
-            tasks.drain(..).collect::<Vec<_>>()
-        };
-
+    async fn join_pending_tasks(&self, tasks: Vec<JoinHandle<()>>) {
         for handle in tasks {
             if let Err(e) = handle.await
                 && !e.is_cancelled()
@@ -3511,6 +3503,14 @@ mod tests {
         client.active_funding_subs.insert(instrument_id);
         client.active_greeks_subs.insert(instrument_id);
         client.is_connected.store(true, Ordering::Relaxed);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (drop_tx, mut drop_rx) = tokio::sync::oneshot::channel::<()>();
+        client.pending_tasks.push(tokio::spawn(async move {
+            let _drop_tx = drop_tx;
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        }));
+        started_rx.await.unwrap();
 
         client.disconnect().await.unwrap();
 
@@ -3545,6 +3545,10 @@ mod tests {
         assert!(!client.active_funding_subs.contains(&instrument_id));
         assert!(!client.active_greeks_subs.contains(&instrument_id));
         assert!(!client.is_connected());
+        assert_eq!(
+            drop_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed),
+        );
     }
 
     #[tokio::test]
@@ -3570,12 +3574,7 @@ mod tests {
         }
 
         wait_until_async(
-            || async {
-                {
-                    let tasks = client.pending_tasks.lock().expect(MUTEX_POISONED);
-                    tasks.iter().all(JoinHandle::is_finished)
-                }
-            },
+            || async { client.pending_tasks.all_finished() },
             Duration::from_secs(2),
         )
         .await;
@@ -3583,7 +3582,7 @@ mod tests {
         // The next spawn should prune the finished handles before pushing the
         // new one, leaving exactly the new tracked task.
         client.spawn_task("test_prune", async { Ok(()) });
-        let len = client.pending_tasks.lock().expect(MUTEX_POISONED).len();
+        let len = client.pending_tasks.len();
         assert_eq!(len, 1, "pending_tasks should retain only the new task");
     }
 }

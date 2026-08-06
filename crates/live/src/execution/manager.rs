@@ -18,6 +18,8 @@
 //! This module provides the execution manager for reconciling execution state between
 //! the local cache and connected venues, as well as purging old state during live trading.
 
+#[cfg(feature = "node")]
+use std::collections::HashSet;
 use std::{cell::RefCell, fmt::Debug, rc::Rc, str::FromStr, sync::LazyLock, time::Duration};
 
 use indexmap::{IndexMap, IndexSet};
@@ -68,7 +70,7 @@ use nautilus_model::{
     reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
     types::{Price, Quantity},
 };
-use rust_decimal::{Decimal, prelude::ToPrimitive};
+use rust_decimal::Decimal;
 use ustr::Ustr;
 
 use super::recency::RecencyMap;
@@ -113,7 +115,7 @@ fn build_cross_zero_leg_report(
         venue_ts_last,
     );
 
-    OrderStatusReport::new(
+    let report = OrderStatusReport::new(
         account_id,
         instrument_id,
         None,
@@ -129,8 +131,9 @@ fn build_cross_zero_leg_report(
         ts_now,
         None,
     )
-    .with_avg_px(avg_px.to_f64().unwrap_or(0.0))
-    .ok()
+    .with_avg_px(avg_px);
+
+    Some(report)
 }
 
 /// Execution clients responsible for reporting one cached entity.
@@ -2086,6 +2089,19 @@ impl ExecutionManager {
         self.external_order_claims.get(instrument_id).copied()
     }
 
+    /// Returns the instruments with external order claims owned by `strategy_id`.
+    #[must_use]
+    #[cfg(feature = "node")]
+    pub(crate) fn get_external_order_claims_for_strategy(
+        &self,
+        strategy_id: StrategyId,
+    ) -> HashSet<InstrumentId> {
+        self.external_order_claims
+            .iter()
+            .filter_map(|(instrument_id, owner)| (*owner == strategy_id).then_some(*instrument_id))
+            .collect()
+    }
+
     /// Claims external orders for a specific strategy and instrument.
     ///
     /// # Errors
@@ -2103,6 +2119,30 @@ impl ExecutionManager {
         self.external_order_claims
             .insert(instrument_id, strategy_id);
         Ok(())
+    }
+
+    #[cfg(feature = "node")]
+    pub(crate) fn register_external_order_claims(
+        &mut self,
+        strategy_id: StrategyId,
+        instrument_ids: &HashSet<InstrumentId>,
+    ) {
+        self.external_order_claims.extend(
+            instrument_ids
+                .iter()
+                .map(|instrument_id| (*instrument_id, strategy_id)),
+        );
+    }
+
+    /// Deregisters all external order claims owned by `strategy_id`.
+    ///
+    /// Coordinated live-node callers should use
+    /// `LiveNode::deregister_external_order_claims` so the reconciliation
+    /// manager and execution engine remain consistent.
+    #[cfg(feature = "node")]
+    pub(crate) fn deregister_external_order_claims(&mut self, strategy_id: StrategyId) {
+        self.external_order_claims
+            .retain(|_, owner| *owner != strategy_id);
     }
 
     /// Records position activity for reconciliation tracking, scoped per (instrument, account).
@@ -2699,7 +2739,7 @@ impl ExecutionManager {
 
                     Quantity::from_decimal_dp(fill_qty, instrument.size_precision())
                         .ok()
-                        .and_then(|order_qty| {
+                        .map(|order_qty| {
                             let fill_price =
                                 Price::from_decimal_dp(fill_px, instrument.price_precision()).ok();
                             let venue_order_id = create_position_reconciliation_venue_order_id(
@@ -2730,8 +2770,7 @@ impl ExecutionManager {
                                 ts_now,
                                 None,
                             )
-                            .with_avg_px(fill_px.to_f64().unwrap_or(0.0))
-                            .ok()
+                            .with_avg_px(fill_px)
                         })
                         .map(|order_report| {
                             log::info!(
@@ -2956,8 +2995,7 @@ impl ExecutionManager {
             ts_now,
             None,
         )
-        .with_avg_px(venue_avg_px.to_f64().unwrap_or(0.0))
-        .ok()?;
+        .with_avg_px(venue_avg_px);
 
         // Preserve venue_position_id for hedging mode
         if let Some(venue_position_id) = report.venue_position_id {
@@ -3326,8 +3364,7 @@ impl ExecutionManager {
             ts_now,
             None,
         )
-        .with_avg_px(fill_px.to_f64().unwrap_or(0.0))
-        .ok()?;
+        .with_avg_px(fill_px);
 
         if let Some(venue_position_id) = report.venue_position_id {
             order_report = order_report.with_venue_position_id(venue_position_id);
@@ -3498,7 +3535,7 @@ impl ExecutionManager {
 
         let ts_now = self.clock.borrow().timestamp_ns();
 
-        let initialized = OrderInitialized::new(
+        let initialized = match OrderInitialized::new_checked(
             self.config.trader_id,
             strategy_id,
             report.instrument_id,
@@ -3533,7 +3570,13 @@ impl ExecutionManager {
             None, // exec_algorithm_params
             None, // exec_spawn_id
             tags,
-        );
+        ) {
+            Ok(initialized) => initialized,
+            Err(e) => {
+                log::error!("Failed to create order from report: {e}");
+                return (Vec::new(), None);
+            }
+        };
 
         let initialized = OrderEventAny::Initialized(initialized);
         let order = match OrderAny::from_events(vec![initialized.clone()]) {

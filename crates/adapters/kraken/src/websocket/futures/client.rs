@@ -66,7 +66,7 @@ pub const KRAKEN_FUTURES_WS_TOPIC_DELIMITER: char = ':';
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -304,7 +304,7 @@ impl KrakenFuturesWebSocketClient {
         )];
 
         let ws_client =
-            WebSocketClient::connect(ws_config, Some(raw_handler), None, None, keyed_quotas, None)
+            WebSocketClient::connect(ws_config, Some(raw_handler), None, keyed_quotas, None)
                 .await
                 .map_err(|e| KrakenWsError::ConnectionError(e.to_string()))?;
 

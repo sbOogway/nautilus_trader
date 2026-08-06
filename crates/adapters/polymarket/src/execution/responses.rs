@@ -13,13 +13,10 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
-use nautilus_common::live::get_runtime;
-use nautilus_core::{MUTEX_POISONED, UUID4, time::AtomicTime};
+use nautilus_common::live::{get_runtime, task::TaskHandles};
+use nautilus_core::{UUID4, time::AtomicTime};
 use nautilus_live::ExecutionEventEmitter;
 use nautilus_model::{
     enums::{OrderSide, OrderStatus, OrderType, TimeInForce},
@@ -30,7 +27,6 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use rust_decimal::Decimal;
-use tokio::task::JoinHandle;
 
 use super::{
     cancellations::execute_deferred_cancel,
@@ -56,7 +52,7 @@ pub(super) async fn handle_batch_order_responses(
     order_identities: &OrderIdentityRegistry,
     pending_submits: &PendingSubmitTracker,
     pending_cancels: &PendingCancelTracker,
-    pending_tasks: &Arc<Mutex<Vec<JoinHandle<()>>>>,
+    pending_tasks: &Arc<TaskHandles>,
     account_id: AccountId,
 ) {
     let response_len = responses.len();
@@ -114,10 +110,6 @@ pub(super) async fn handle_batch_order_responses(
     }
 
     if !deferred.is_empty() {
-        let mut tasks = pending_tasks.lock().expect(MUTEX_POISONED);
-
-        tasks.retain(|handle| !handle.is_finished());
-
         for (order, order_id_str, venue_order_id) in deferred {
             let submitter = submitter.clone();
             let emitter = emitter.clone();
@@ -135,7 +127,7 @@ pub(super) async fn handle_batch_order_responses(
                 )
                 .await;
             });
-            tasks.push(handle);
+            pending_tasks.push(handle);
         }
     }
 }
@@ -1081,6 +1073,128 @@ mod tests {
     }
 
     #[rstest]
+    fn test_confirmed_maker_trade_owned_by_case_variant_address_generates_fill_report() {
+        let instrument = test_instrument();
+        let mut trade: crate::http::models::PolymarketTradeReport = load("http_trade_report.json");
+        trade.trader_side = PolymarketLiquiditySide::Maker;
+
+        // Recorded venue payloads carry EIP-55 checksummed (mixed-case) maker
+        // addresses while configured funder addresses are commonly lowercase.
+        // Mirror that direction: give the payload side a case variant (all-
+        // uppercase hex stands in for the checksummed form), keep the
+        // configured side lowercase. Any case variant of the same address
+        // must still establish ownership.
+        let configured_address = trade.maker_orders[0].maker_address.clone();
+        let uppercase_variant_address = configured_address
+            .to_ascii_uppercase()
+            .replacen("0X", "0x", 1);
+        assert_ne!(uppercase_variant_address, configured_address);
+        trade.maker_orders[0].maker_address = uppercase_variant_address;
+        let foreign_api_key = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+        assert_ne!(trade.maker_orders[0].owner, foreign_api_key);
+        let expected_venue_order_id = VenueOrderId::from(trade.maker_orders[0].order_id.as_str());
+
+        let instruments = AtomicMap::new();
+        instruments.insert(trade.asset_id, instrument);
+        let ctx = crate::execution::reconciliation::FillContext {
+            account_id: AccountId::from("POLY-001"),
+            user_address: &configured_address,
+            api_key: foreign_api_key,
+            pusd: Currency::pUSD(),
+            clock: nautilus_core::time::get_atomic_clock_realtime(),
+        };
+
+        let (reports, discards) = crate::execution::reconciliation::build_fill_reports_from_trades(
+            &[trade],
+            &ctx,
+            &instruments,
+            None,
+            UnixNanos::from(1_000_000_000u64),
+        );
+
+        assert_eq!(
+            reports.len(),
+            1,
+            "the account's own confirmed maker fill must be reported",
+        );
+        assert_eq!(reports[0].venue_order_id, expected_venue_order_id);
+        assert_eq!(
+            discards.unowned_maker_trades, 0,
+            "entry-level skips of foreign entries in an owned trade are not trade drops",
+        );
+        assert_eq!(discards.unmapped_instruments, 0);
+    }
+
+    #[rstest]
+    #[case(PolymarketLiquiditySide::Maker)]
+    #[case(PolymarketLiquiditySide::Taker)]
+    fn test_confirmed_trade_without_instrument_counts_unmapped_discard(
+        #[case] trader_side: PolymarketLiquiditySide,
+    ) {
+        let mut trade: crate::http::models::PolymarketTradeReport = load("http_trade_report.json");
+        trade.trader_side = trader_side;
+        let instruments = AtomicMap::new();
+        let ctx = crate::execution::reconciliation::FillContext {
+            account_id: AccountId::from("POLY-001"),
+            user_address: "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+            api_key: "ffffffff-ffff-ffff-ffff-ffffffffffff",
+            pusd: Currency::pUSD(),
+            clock: nautilus_core::time::get_atomic_clock_realtime(),
+        };
+
+        let (reports, discards) = crate::execution::reconciliation::build_fill_reports_from_trades(
+            &[trade],
+            &ctx,
+            &instruments,
+            None,
+            UnixNanos::from(1_000_000_000u64),
+        );
+
+        assert_eq!(reports.len(), 0);
+        assert_eq!(
+            discards,
+            crate::execution::reconciliation::FillBuildDiscards {
+                unmapped_instruments: 1,
+                unowned_maker_trades: 0,
+            },
+        );
+    }
+
+    #[rstest]
+    fn test_confirmed_maker_trade_without_owned_order_is_counted() {
+        let instrument = test_instrument();
+        let mut trade: crate::http::models::PolymarketTradeReport = load("http_trade_report.json");
+        trade.trader_side = PolymarketLiquiditySide::Maker;
+
+        let instruments = AtomicMap::new();
+        instruments.insert(trade.asset_id, instrument);
+        // Neither the address nor the API key matches any maker order, so the
+        // whole confirmed trade is dropped; the drop must be observable.
+        let ctx = crate::execution::reconciliation::FillContext {
+            account_id: AccountId::from("POLY-001"),
+            user_address: "0x000000000000000000000000000000000000dead",
+            api_key: "ffffffff-ffff-ffff-ffff-ffffffffffff",
+            pusd: Currency::pUSD(),
+            clock: nautilus_core::time::get_atomic_clock_realtime(),
+        };
+
+        let (reports, discards) = crate::execution::reconciliation::build_fill_reports_from_trades(
+            &[trade],
+            &ctx,
+            &instruments,
+            None,
+            UnixNanos::from(1_000_000_000u64),
+        );
+
+        assert!(reports.is_empty());
+        assert_eq!(
+            discards.unowned_maker_trades, 1,
+            "a confirmed maker trade dropped whole must be counted, not silent",
+        );
+        assert_eq!(discards.unmapped_instruments, 0);
+    }
+
+    #[rstest]
     fn test_unknown_submit_tracks_expected_id_for_ws_order_recovery() {
         let ws_order: PolymarketUserOrder = load("ws_user_order_placement.json");
         let instrument = test_instrument();
@@ -1631,6 +1745,7 @@ mod tests {
             taker_order_id: venue_order_id.as_str().to_string(),
             timestamp: "1700000000000".to_string(),
             trade_owner: Ustr::from("00000000-0000-0000-0000-000000000001"),
+            transaction_hash: None,
             trader_side: PolymarketLiquiditySide::Taker,
             event_type: PolymarketEventType::Trade,
         }

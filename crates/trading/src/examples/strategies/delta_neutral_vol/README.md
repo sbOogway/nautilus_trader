@@ -77,7 +77,7 @@ data feeds. It leaves live positions unchanged.
 ## Configuration
 
 | Parameter                    | Type             | Default    | Description                                     |
-|------------------------------|------------------|------------|-------------------------------------------------|
+| ---------------------------- | ---------------- | ---------- | ----------------------------------------------- |
 | `option_family`              | `String`         | *required* | Option family filter, e.g. `BTC-USD`.           |
 | `hedge_instrument_id`        | `InstrumentId`   | *required* | Underlying hedge instrument.                    |
 | `client_id`                  | `ClientId`       | *required* | Data and execution client identifier.           |
@@ -154,7 +154,7 @@ Pass the config to `add_builtin_strategy` on a `LiveNode` or
 runs entirely in Rust.
 
 ```python
-from nautilus_trader.core.nautilus_pyo3.trading import DeltaNeutralVolConfig
+from nautilus_trader.trading import DeltaNeutralVolConfig
 
 config = DeltaNeutralVolConfig(
     option_family="BTC-USD",

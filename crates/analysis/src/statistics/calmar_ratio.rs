@@ -42,7 +42,7 @@ use crate::{
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.analysis", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.analysis", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -165,6 +165,20 @@ mod tests {
         let returns = create_returns(&[0.10, -0.10, 0.50, -0.20, 0.10]);
         let result = ratio.calculate_from_returns(&returns).unwrap();
         assert!(approx_eq!(f64, result, 1.534, epsilon = 1e-9));
+    }
+
+    #[rstest]
+    #[case(5)]
+    #[case(252)]
+    fn test_undefined_cagr_propagates_to_calmar_ratio(#[case] days: usize) {
+        let ratio = CalmarRatio::new(Some(252));
+        let mut values = vec![0.0; days];
+        values[0] = -1.5;
+        let returns = create_returns(&values);
+
+        let result = ratio.calculate_from_returns(&returns).unwrap();
+
+        assert!(result.is_nan());
     }
 
     #[rstest]

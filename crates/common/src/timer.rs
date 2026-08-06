@@ -23,14 +23,12 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(feature = "python")]
-use nautilus_core::python::IntoPyObjectNautilusExt;
 use nautilus_core::{
     UUID4, UnixNanos,
     correctness::{FAILED, check_valid_string_utf8},
 };
 #[cfg(feature = "python")]
-use pyo3::{Py, PyAny, PyResult, Python, types::PyCapsule};
+use pyo3::{Py, PyAny, Python};
 use ustr::Ustr;
 
 /// Creates a valid nanoseconds interval that is guaranteed to be positive.
@@ -45,7 +43,7 @@ pub fn create_valid_interval(interval_ns: u64) -> NonZeroU64 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.common", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.common", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -125,33 +123,28 @@ impl PartialOrd for ScheduledTimeEvent {
 impl Ord for ScheduledTimeEvent {
     fn cmp(&self, other: &Self) -> Ordering {
         // Reverse order for max heap: earlier timestamps have higher priority
-        other.0.ts_event.cmp(&self.0.ts_event)
+        other
+            .0
+            .ts_event
+            .cmp(&self.0.ts_event)
+            .then_with(|| other.0.name.cmp(&self.0.name))
+            .then_with(|| other.0.ts_init.cmp(&self.0.ts_init))
+            .then_with(|| other.0.event_id.as_str().cmp(self.0.event_id.as_str()))
     }
-}
-
-#[cfg(feature = "python")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Python time event callback argument mode.
-pub enum PythonTimeEventCallbackArg {
-    /// Callbacks receive the PyO3 `TimeEvent` object.
-    TimeEvent,
-    /// Legacy Cython callbacks receive a `PyCapsule` containing the Rust event.
-    LegacyCapsule,
 }
 
 #[cfg(feature = "python")]
 /// Python callback for time events.
 pub struct PythonTimeEventCallback {
     callback: Py<PyAny>,
-    arg: PythonTimeEventCallbackArg,
 }
 
 #[cfg(feature = "python")]
 impl PythonTimeEventCallback {
     /// Creates a new [`PythonTimeEventCallback`] instance.
     #[must_use]
-    pub const fn new(callback: Py<PyAny>, arg: PythonTimeEventCallbackArg) -> Self {
-        Self { callback, arg }
+    pub const fn new(callback: Py<PyAny>) -> Self {
+        Self { callback }
     }
 
     /// Returns the Python callable.
@@ -163,14 +156,7 @@ impl PythonTimeEventCallback {
     /// Invokes the Python callback for the given `TimeEvent`.
     pub fn call(&self, event: TimeEvent) {
         Python::attach(|py| {
-            let result = match self.arg {
-                PythonTimeEventCallbackArg::TimeEvent => self.callback.call1(py, (event,)),
-                PythonTimeEventCallbackArg::LegacyCapsule => {
-                    call_legacy_python_time_event_callback(py, event, &self.callback)
-                }
-            };
-
-            if let Err(e) = result {
+            if let Err(e) = self.callback.call1(py, (event,)) {
                 log::error!("Python time event callback raised exception: {e}");
             }
         });
@@ -181,7 +167,6 @@ impl PythonTimeEventCallback {
 impl Debug for PythonTimeEventCallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(stringify!(PythonTimeEventCallback))
-            .field("arg", &self.arg)
             .finish_non_exhaustive()
     }
 }
@@ -306,37 +291,8 @@ impl TimeEventCallback {
     /// Creates a Python callback that receives a PyO3 `TimeEvent`.
     #[must_use]
     pub fn from_python_time_event(callback: Py<PyAny>) -> Self {
-        Self::Python(Arc::new(PythonTimeEventCallback::new(
-            callback,
-            PythonTimeEventCallbackArg::TimeEvent,
-        )))
+        Self::Python(Arc::new(PythonTimeEventCallback::new(callback)))
     }
-
-    /// Creates a legacy Python callback that receives a `PyCapsule`.
-    #[must_use]
-    pub fn from_python_legacy_capsule(callback: Py<PyAny>) -> Self {
-        Self::Python(Arc::new(PythonTimeEventCallback::new(
-            callback,
-            PythonTimeEventCallbackArg::LegacyCapsule,
-        )))
-    }
-}
-
-#[cfg(feature = "python")]
-fn call_legacy_python_time_event_callback(
-    py: Python<'_>,
-    event: TimeEvent,
-    callback: &Py<PyAny>,
-) -> PyResult<Py<PyAny>> {
-    #[allow(
-        deprecated,
-        reason = "unnamed capsules are required for legacy Cython time-event callbacks"
-    )]
-    let capsule: Py<PyAny> = PyCapsule::new_with_destructor(py, event, None, |_, _| {})
-        .expect("Error creating `PyCapsule`")
-        .into_py_any_unwrap(py);
-
-    callback.call1(py, (capsule,))
 }
 
 #[repr(C)]
@@ -563,7 +519,7 @@ impl Iterator for TestTimer {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, num::NonZeroU64, rc::Rc};
+    use std::{cell::RefCell, collections::BinaryHeap, num::NonZeroU64, rc::Rc};
 
     use nautilus_core::{UUID4, UnixNanos};
     #[cfg(feature = "python")]
@@ -577,7 +533,10 @@ mod tests {
     use rstest::*;
     use ustr::Ustr;
 
-    use super::{TestTimer, TimeEvent, TimeEventCallback, TimeEventHandler, create_valid_interval};
+    use super::{
+        ScheduledTimeEvent, TestTimer, TimeEvent, TimeEventCallback, TimeEventHandler,
+        create_valid_interval,
+    };
     use crate::msgbus::{
         BusTap, Endpoint, MStr, MessagingSwitchboard, Topic, clear_bus_tap, set_bus_tap,
     };
@@ -787,9 +746,100 @@ mod tests {
         assert_ne!(earlier_name, later_id);
     }
 
+    #[rstest]
+    fn test_scheduled_time_event_ordering_laws() {
+        let base = ScheduledTimeEvent::new(TimeEvent::new(
+            Ustr::from("ALPHA"),
+            UUID4::from("00000000-0000-4000-8000-000000000001"),
+            100.into(),
+            10.into(),
+        ));
+        let variants = [
+            base.clone(),
+            ScheduledTimeEvent::new(TimeEvent::new(
+                Ustr::from("BETA"),
+                base.0.event_id,
+                base.0.ts_event,
+                base.0.ts_init,
+            )),
+            ScheduledTimeEvent::new(TimeEvent::new(
+                base.0.name,
+                UUID4::from("00000000-0000-4000-8000-000000000002"),
+                base.0.ts_event,
+                base.0.ts_init,
+            )),
+            ScheduledTimeEvent::new(TimeEvent::new(
+                base.0.name,
+                base.0.event_id,
+                101.into(),
+                base.0.ts_init,
+            )),
+            ScheduledTimeEvent::new(TimeEvent::new(
+                base.0.name,
+                base.0.event_id,
+                base.0.ts_event,
+                11.into(),
+            )),
+        ];
+
+        for a in &variants {
+            for b in &variants {
+                assert_eq!(a == b, a.cmp(b).is_eq());
+                assert_eq!(a.partial_cmp(b), Some(a.cmp(b)));
+                assert_eq!(a.cmp(b), b.cmp(a).reverse());
+            }
+        }
+    }
+
+    #[rstest]
+    fn test_scheduled_time_event_heap_ordering() {
+        let expected = [
+            TimeEvent::new(
+                Ustr::from("ALPHA"),
+                UUID4::from("00000000-0000-4000-8000-000000000001"),
+                100.into(),
+                10.into(),
+            ),
+            TimeEvent::new(
+                Ustr::from("ALPHA"),
+                UUID4::from("00000000-0000-4000-8000-000000000002"),
+                100.into(),
+                10.into(),
+            ),
+            TimeEvent::new(
+                Ustr::from("ALPHA"),
+                UUID4::from("00000000-0000-4000-8000-000000000003"),
+                100.into(),
+                11.into(),
+            ),
+            TimeEvent::new(
+                Ustr::from("BETA"),
+                UUID4::from("00000000-0000-4000-8000-000000000004"),
+                100.into(),
+                10.into(),
+            ),
+            TimeEvent::new(
+                Ustr::from("ALPHA"),
+                UUID4::from("00000000-0000-4000-8000-000000000005"),
+                101.into(),
+                10.into(),
+            ),
+        ];
+        let insertion_order = [4, 1, 3, 0, 2];
+        let mut heap = BinaryHeap::new();
+
+        for index in insertion_order {
+            heap.push(ScheduledTimeEvent::new(expected[index].clone()));
+        }
+
+        let popped = std::iter::from_fn(|| heap.pop().map(ScheduledTimeEvent::into_inner))
+            .collect::<Vec<_>>();
+        assert_eq!(popped, expected);
+    }
+
     #[cfg(feature = "python")]
     #[rstest]
-    fn test_python_callback_modes_pass_expected_argument_types() {
+    fn test_python_callback_passes_time_event() {
         Python::initialize();
 
         Python::attach(|py| {
@@ -817,16 +867,12 @@ mod tests {
                 UnixNanos::from(99),
             );
 
-            TimeEventCallback::from_python_time_event(callback.clone_ref(py)).call(event.clone());
-            TimeEventCallback::from_python_legacy_capsule(callback).call(event);
+            TimeEventCallback::from_python_time_event(callback).call(event);
 
+            assert_eq!(seen.len(), 1);
             assert_eq!(
                 seen.get_item(0).unwrap().extract::<String>().unwrap(),
                 "TimeEvent"
-            );
-            assert_eq!(
-                seen.get_item(1).unwrap().extract::<String>().unwrap(),
-                "PyCapsule"
             );
         });
     }

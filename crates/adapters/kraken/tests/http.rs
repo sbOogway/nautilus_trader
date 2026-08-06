@@ -33,7 +33,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Response,
 };
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use nautilus_common::{
     cache::INSTRUMENT_NOT_FOUND,
     clients::DataClient,
@@ -72,6 +72,7 @@ use nautilus_model::{
     types::{Currency, Price, Quantity},
 };
 use nautilus_network::http::HttpClient;
+use nautilus_testkit::events::drain_data_events;
 use rstest::rstest;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -729,18 +730,6 @@ async fn start_test_server() -> (SocketAddr, Arc<TestServerState>) {
     wait_for_server(addr, "/0/public/Time").await;
 
     (addr, state)
-}
-
-async fn drain_data_events(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataEvent>,
-    timeout: Duration,
-) -> Vec<DataEvent> {
-    let mut events = Vec::new();
-    let deadline = tokio::time::Instant::now() + timeout;
-    while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
-        events.push(event);
-    }
-    events
 }
 
 fn instrument_response(events: &[DataEvent]) -> Option<&InstrumentResponse> {
@@ -2598,7 +2587,7 @@ async fn test_futures_domain_request_trades() {
     assert_eq!(limited[0].trade_id, trades[trades.len() - 1].trade_id);
 
     // Anchored requests page forward from `start` with `sort=asc`
-    let start = DateTime::<Utc>::from_timestamp(1_700_000_000, 0);
+    let start = Some(Timestamp::from_second(1_700_000_000).unwrap());
     let result = client
         .request_trades(instrument_id, start, None, None)
         .await;

@@ -7,38 +7,17 @@ Additional guidelines are provided below.
 
 ### Universal formatting rules
 
-The following applies to **all** source files (Rust, Python, Cython, shell, etc.):
+The following applies to **all** source files (Rust, Python, shell, etc.):
 
 - Use **spaces only**, never hard tab characters.
 - Lines should generally stay below **100 characters**; wrap thoughtfully when necessary.
 - Prefer American English spelling (`color`, `serialize`, `behavior`).
 
-### Shell script portability
+### Shell scripts
 
-Shell scripts in this repository use **bash** (not POSIX sh) and must be portable across **Linux** and **macOS**. User-facing scripts (e.g., `scripts/cli/install.sh`) must also work on **Windows** via Git Bash or WSL.
-
-**Shebang**: Always use `#!/usr/bin/env bash` for portability.
-
-**Common pitfalls**: GNU and BSD utilities differ between Linux and macOS:
-
-| Command              | Linux (GNU)       | macOS (BSD)       | Portable solution                        |
-|----------------------|-------------------|-------------------|------------------------------------------|
-| `sed -i`             | `sed -i 's/…'`    | `sed -i '' 's/…'` | Use backup extension: `sed -i.bak 's/…'` |
-| `stat` (file size)   | `stat -c%s file`  | `stat -f%z file`  | Detect with `stat --version`             |
-| `sha256sum`          | `sha256sum file`  | N/A               | Use `shasum -a 256` or detect            |
-| `readlink -f`        | Works             | N/A               | Avoid, or use `realpath`                 |
-| `grep -P` (PCRE)     | Works             | N/A               | Use `-E` (extended regex) instead        |
-| `date` (nanoseconds) | `date +%N`        | N/A               | Use `$RANDOM` for cache‑busting          |
-
-**Bash version**: macOS ships with bash 3.2; avoid bash 4+ features in user-facing scripts:
-
-| Feature                           | Bash version | Alternative                      |
-|-----------------------------------|--------------|----------------------------------|
-| Associative arrays (`declare -A`) | 4.0+         | Use files or simple arrays       |
-| `readarray` / `mapfile`           | 4.0+         | Use `while read` loops           |
-| `${var,,}` / `${var^^}` (case)    | 4.0+         | Use `tr '[:upper:]' '[:lower:]'` |
-
-**CI scripts** (`scripts/ci/*`) run on Linux runners, so bash 4+ and GNU tools are acceptable there.
+Bash is the default shell for repository scripts. Use POSIX `sh` only when a caller cannot rely on
+Bash being installed. See [Shell](shell.md) for script selection, extensions, portability,
+structure, testing, formatting, and linting requirements.
 
 ### Comment conventions
 
@@ -100,7 +79,7 @@ representation. Include the representation only when real sibling formats exist.
 
 #### Adapter package facades
 
-Each package under `nautilus_trader/adapters/` is a thin facade over the private
+Each package under `python/nautilus_trader/adapters/` is a thin facade over the private
 `_libnautilus` extension. Every adapter `__init__.py` declares a deterministic `__all__` that is
 the single source of truth for its public API; `python/generate_stubs.py` copies that list into the
 matching `.pyi` so runtime and stub exports agree exactly.
@@ -139,47 +118,55 @@ long_method_with_many_params(
 
 ## Commit messages
 
-Here are some guidelines for the style of your commit messages:
+Commit messages use a capitalized, imperative subject naming the affected surface, optionally followed by a body
+explaining the change.
 
-1. Limit subject titles to 60 characters or fewer. Capitalize subject line and do not end with period.
+### Subject line
 
-2. Use 'imperative voice', i.e. the message should describe what the commit will do if applied.
+- Open with a capitalized imperative verb, so the subject describes what the commit does when applied.
+  `Add`, `Fix`, `Improve`, `Refine`, `Update`, `Remove`, `Refactor`, and `Standardize` cover most of the history.
+- Name the affected surface (crate, adapter, subsystem, or type) so the log stays scannable.
+- Keep the subject between 10 and 60 characters for clear GitHub rendering and concise but descriptive text.
+- Do not end the subject with a period.
 
-3. Optional: Use the body to explain change. Separate from subject with a blank line. Keep under 100 character width. You can use bullet points with or without terminating periods.
-
-4. Optional: Provide # references to relevant issues or tickets.
-
-5. Optional: Provide any hyperlinks which are informative.
-
-### Gitlint (optional)
-
-Gitlint is available to help enforce commit message standards automatically. It checks that commit messages follow the guidelines above (character limits, formatting, etc.). This is **opt-in** and not enforced in CI.
-
-**Benefits**: Encourages concise yet expressive commit messages, helps develop clear explanations of changes.
-
-**Installation**: First install gitlint to run it locally:
-
-```bash
-uv pip install gitlint
+```text
+Add Decimal constructors to Instrument trait
+Fix non-atomic order event application
+Refine cross-platform wheel validation
+Remove stale security audit exceptions
 ```
 
-To enable gitlint as an automatic commit-msg hook:
+Avoid these shapes:
 
-```bash
-prek install --hook-type commit-msg
+```text
+feat(bybit): add due_post_only flag        # Conventional Commits type and scope
+fix: bug                                   # lowercase, unspecific, too short
+Fixed the Bybit post-only rejection flag.  # past tense, trailing period
+Update stuff                               # says nothing about the surface
 ```
 
-**Manual usage**: Check your last commit message:
+### Conventional Commits
 
-```bash
-gitlint
-```
+Do NOT use [Conventional Commits](https://www.conventionalcommits.org/) syntax for commit messages or pull
+request titles. Many editors and AI assistants emit that format by default, but no commit in this
+repository's history uses it, and the type and scope ceremony duplicates what the subject already carries.
+Pull request titles matter here too, because a squash merge turns the PR title into the commit subject.
 
-Configuration is in `.gitlint` at the repository root:
+### Body
 
-- **60-character title limit**: Ensures clear rendering on GitHub and encourages brevity while remaining descriptive.
-- **79-character body width**: Aligns with Python's PEP 8 conventions and the traditional limit for git tooling.
+The body is optional, but anything beyond a trivial change should say why the change was made rather than
+restate the diff.
 
-:::note
-Gitlint may be enforced in CI in the future, so adopting these practices early eases the transition.
-:::
+- Separate the body from the subject with a blank line.
+- Keep body lines to 79 characters or fewer to align with PEP 8 and traditional Git tooling.
+- Use prose paragraphs or bullet points, whichever suits the change. Bullets may keep the same imperative
+  voice as the subject, and do not need terminating periods.
+- Include informative hyperlinks where they help a future reader.
+
+### Issue references
+
+- Reference issues from the body, typically on a final line: `Resolves #4534` when the commit closes the
+  issue, or `Related to #4547` when it is partial work.
+- GitHub appends the pull request number to the subject on squash merge, producing subjects such as
+  `Fix TWAP child-order sizing and interval validation (#4544)`. Do not add that suffix by hand.
+- The appended suffix can make the resulting squash‑merged subject exceed the 60‑character limit.

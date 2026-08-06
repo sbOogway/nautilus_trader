@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.testkit", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.testkit", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -169,6 +169,8 @@ pub struct ExecTesterConfig {
     /// Close all positions on stop.
     #[builder(default = true)]
     pub close_positions_on_stop: bool,
+    /// Truncate close-on-stop quantities to this decimal precision.
+    pub close_positions_qty_precision: Option<u8>,
     /// Time in force for closing positions (None defaults to GTC).
     pub close_positions_time_in_force: Option<TimeInForce>,
     /// Use `reduce_only` when closing positions.
@@ -304,6 +306,7 @@ impl ExecTesterConfig {
             emulation_trigger: None,
             cancel_orders_on_stop: true,
             close_positions_on_stop: true,
+            close_positions_qty_precision: None,
             close_positions_time_in_force: None,
             reduce_only_on_stop: true,
             use_individual_cancels_on_stop: false,

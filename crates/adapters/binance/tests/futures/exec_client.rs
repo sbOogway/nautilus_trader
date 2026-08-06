@@ -123,7 +123,7 @@ fn load_fixture(name: &str) -> serde_json::Value {
 }
 
 fn exchange_info_response() -> serde_json::Value {
-    load_fixture("exchange_info_delivery_usdm.json")
+    load_fixture("exchange_info_usdm.json")
 }
 
 #[derive(Clone, Copy)]
@@ -3639,6 +3639,25 @@ async fn test_generate_mass_status_fails_on_invalid_fill() {
     let error = client.generate_mass_status(Some(60)).await.unwrap_err();
 
     assert!(error.to_string().contains("commission"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_generate_mass_status_rejects_overflowing_lookback() {
+    let addr = start_exec_test_server().await;
+    let base_url_http = format!("http://{addr}");
+    let base_url_ws = format!("ws://{addr}/ws");
+    let (client, _rx, _cache) = create_test_execution_client(base_url_http, base_url_ws);
+
+    let error = client
+        .generate_mass_status(Some(307_445_735))
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "lookback minutes exceed the nanosecond range"
+    );
 }
 
 #[rstest]

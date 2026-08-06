@@ -26,7 +26,8 @@ use std::{
 };
 
 use anyhow::Context;
-use chrono::{DateTime, NaiveDate, Utc};
+use arc_swap::ArcSwapOption;
+use jiff::{Timestamp, civil::Date};
 use nautilus_core::{
     AtomicMap, AtomicTime, UUID4, consts::NAUTILUS_USER_AGENT, nanos::UnixNanos,
     time::get_atomic_clock_realtime,
@@ -67,7 +68,8 @@ use super::{
     },
     parse::{
         parse_account_state, parse_bar, parse_fill_report, parse_funding_rate, parse_instrument,
-        parse_order_status_report, parse_position_status_report, parse_trade_tick,
+        parse_order_detail_status_report, parse_order_status_report, parse_position_status_report,
+        parse_trade_tick,
     },
     query::{
         GetBookParams, GetCandleParams, GetCandlesParams, GetFillsParams, GetFundingRatesParams,
@@ -79,7 +81,7 @@ use crate::common::{
     consts::{AX_FILLS_MAX_LOOKBACK_DAYS, AX_HTTP_URL, AX_ORDERS_URL},
     credential::Credential,
     enums::{AxCandleWidth, AxInstrumentState},
-    parse::{cid_to_client_order_id, client_order_id_to_cid},
+    parse::{ax_timestamp_stn_to_unix_nanos, cid_to_client_order_id, client_order_id_to_cid},
 };
 
 /// Default Ax REST API rate limit.
@@ -277,6 +279,10 @@ impl AxRawHttpClient {
     pub fn set_session_token(&self, token: String) {
         // Lock poisoning indicates a panic in another thread, which is fatal
         *self.session_token.write().expect("Lock poisoned") = Some(token);
+    }
+
+    pub(crate) fn has_session_token(&self) -> bool {
+        self.session_token.read().is_ok_and(|guard| guard.is_some())
     }
 
     fn default_headers() -> HashMap<String, String> {
@@ -1142,10 +1148,7 @@ impl AxRawHttpClient {
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.architect_ax",
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.architect_ax", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -1156,6 +1159,7 @@ pub struct AxHttpClient {
     pub(crate) instruments_cache: Arc<AtomicMap<Ustr, InstrumentAny>>,
     clock: &'static AtomicTime,
     cache_initialized: Arc<AtomicBool>,
+    account_fees: Arc<ArcSwapOption<(Decimal, Decimal)>>,
 }
 
 impl Clone for AxHttpClient {
@@ -1165,6 +1169,7 @@ impl Clone for AxHttpClient {
             instruments_cache: self.instruments_cache.clone(),
             cache_initialized: self.cache_initialized.clone(),
             clock: self.clock,
+            account_fees: self.account_fees.clone(),
         }
     }
 }
@@ -1204,6 +1209,7 @@ impl AxHttpClient {
             instruments_cache: Arc::new(AtomicMap::new()),
             cache_initialized: Arc::new(AtomicBool::new(false)),
             clock: get_atomic_clock_realtime(),
+            account_fees: Arc::new(ArcSwapOption::empty()),
         })
     }
 
@@ -1239,6 +1245,7 @@ impl AxHttpClient {
             instruments_cache: Arc::new(AtomicMap::new()),
             cache_initialized: Arc::new(AtomicBool::new(false)),
             clock: get_atomic_clock_realtime(),
+            account_fees: Arc::new(ArcSwapOption::empty()),
         })
     }
 
@@ -1363,7 +1370,54 @@ impl AxHttpClient {
         self.instruments_cache.get_cloned(symbol)
     }
 
+    /// Resolves the maker and taker fee rates for the account behind the current credentials.
+    ///
+    /// AX reports fee rates per account rather than per user, and returns the accounts the
+    /// credentials can act on. The first entry is used, which is the account AX resolves when a
+    /// request carries no explicit selector. The rates are retained so later instrument requests,
+    /// including the periodic refresh, keep reporting them.
+    ///
+    /// Requires an authenticated client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails, the response carries no accounts, or the selected
+    /// account supplies no fee rates. An absent rate is not treated as zero, because a zero rate
+    /// is itself valid and a silent zero would outlive the response that caused it.
+    pub async fn request_account_fees(&self) -> anyhow::Result<(Decimal, Decimal)> {
+        let whoami = self
+            .inner
+            .get_whoami()
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("failed to request AX whoami")?;
+
+        let Some(account) = whoami.accounts.first() else {
+            anyhow::bail!("AX whoami returned no accounts to resolve fees from");
+        };
+
+        if whoami.accounts.len() > 1 {
+            log::warn!(
+                "AX credentials cover {} accounts, using fee rates from {}",
+                whoami.accounts.len(),
+                account.id,
+            );
+        }
+
+        let (Some(maker_fee), Some(taker_fee)) = (account.maker_fee, account.taker_fee) else {
+            anyhow::bail!("AX whoami account {} supplied no fee rates", account.id);
+        };
+
+        let fees = (maker_fee, taker_fee);
+        self.account_fees.store(Some(Arc::new(fees)));
+
+        Ok(fees)
+    }
+
     /// Requests all instruments from Ax.
+    ///
+    /// Fee rates fall back to the rates last resolved from `GET /whoami`, and to zero when no
+    /// rates have been resolved.
     ///
     /// # Errors
     ///
@@ -1379,8 +1433,7 @@ impl AxHttpClient {
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        let maker_fee = maker_fee.unwrap_or(Decimal::ZERO);
-        let taker_fee = taker_fee.unwrap_or(Decimal::ZERO);
+        let (maker_fee, taker_fee) = self.resolve_fees(maker_fee, taker_fee);
         let ts_init = self.generate_ts_init();
 
         let mut instruments: Vec<InstrumentAny> = Vec::new();
@@ -1409,6 +1462,9 @@ impl AxHttpClient {
 
     /// Requests a single instrument from Ax by symbol.
     ///
+    /// Fee rates fall back to the rates last resolved from `GET /whoami`, and to zero when no
+    /// rates have been resolved.
+    ///
     /// # Errors
     ///
     /// Returns an error if the HTTP request fails or instrument parsing fails.
@@ -1424,11 +1480,38 @@ impl AxHttpClient {
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        let maker_fee = maker_fee.unwrap_or(Decimal::ZERO);
-        let taker_fee = taker_fee.unwrap_or(Decimal::ZERO);
+        let (maker_fee, taker_fee) = self.resolve_fees(maker_fee, taker_fee);
         let ts_init = self.generate_ts_init();
 
         parse_instrument(&resp, maker_fee, taker_fee, ts_init, ts_init)
+    }
+
+    fn resolve_fees(
+        &self,
+        maker_fee: Option<Decimal>,
+        taker_fee: Option<Decimal>,
+    ) -> (Decimal, Decimal) {
+        let resolved = self.account_fees.load();
+
+        let Some(&(resolved_maker, resolved_taker)) = resolved.as_deref() else {
+            // Either rate missing becomes zero, so warn on a partial argument too
+            if (maker_fee.is_none() || taker_fee.is_none()) && self.inner.has_session_token() {
+                log::warn!(
+                    "Building instruments with zero fees: authenticated but account fee rates \
+                     were never resolved"
+                );
+            }
+
+            return (
+                maker_fee.unwrap_or(Decimal::ZERO),
+                taker_fee.unwrap_or(Decimal::ZERO),
+            );
+        };
+
+        (
+            maker_fee.unwrap_or(resolved_maker),
+            taker_fee.unwrap_or(resolved_taker),
+        )
     }
 
     /// Requests an order book snapshot from Ax and builds a Nautilus [`OrderBook`].
@@ -1460,14 +1543,18 @@ impl AxHttpClient {
 
         let price_precision = instrument.price_precision();
         let size_precision = instrument.size_precision();
-        let ts_event = UnixNanos::from(resp.book.ts as u64 * 1_000_000_000 + resp.book.tn as u64);
+        let ts_event = ax_timestamp_stn_to_unix_nanos(resp.book.ts, resp.book.tn)?;
 
         for (i, level) in resp.book.b.iter().enumerate() {
             if depth.is_some_and(|d| i >= d) {
                 break;
             }
-            let price = Price::from_decimal_dp(level.p, price_precision)
-                .unwrap_or_else(|_| Price::from(level.p.to_string().as_str()));
+            let price = Price::from_decimal_dp(level.p, price_precision).with_context(|| {
+                format!(
+                    "Failed to convert AX book bid price {} for {symbol}",
+                    level.p
+                )
+            })?;
             let size = Quantity::new(level.q as f64, size_precision);
             let order = BookOrder::new(OrderSide::Buy, price, size, i as u64);
             book.add(order, 0, i as u64, ts_event);
@@ -1478,8 +1565,12 @@ impl AxHttpClient {
             if depth.is_some_and(|d| i >= d) {
                 break;
             }
-            let price = Price::from_decimal_dp(level.p, price_precision)
-                .unwrap_or_else(|_| Price::from(level.p.to_string().as_str()));
+            let price = Price::from_decimal_dp(level.p, price_precision).with_context(|| {
+                format!(
+                    "Failed to convert AX book ask price {} for {symbol}",
+                    level.p
+                )
+            })?;
             let size = Quantity::new(level.q as f64, size_precision);
             let order = BookOrder::new(OrderSide::Sell, price, size, (bids_len + i) as u64);
             book.add(order, 0, (bids_len + i) as u64, ts_event);
@@ -1555,17 +1646,19 @@ impl AxHttpClient {
     pub async fn request_bars(
         &self,
         symbol: Ustr,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         width: AxCandleWidth,
     ) -> anyhow::Result<Vec<Bar>> {
         let instrument = self
             .get_instrument(&symbol)
             .ok_or_else(|| anyhow::anyhow!("Instrument {symbol} not found in cache"))?;
 
-        let start_ns = start.and_then(|dt| dt.timestamp_nanos_opt()).unwrap_or(0);
+        let start_ns = start
+            .and_then(|dt| i64::try_from(dt.as_nanosecond()).ok())
+            .unwrap_or(0);
         let end_ns = end
-            .and_then(|dt| dt.timestamp_nanos_opt())
+            .and_then(|dt| i64::try_from(dt.as_nanosecond()).ok())
             .unwrap_or_else(|| self.generate_ts_init().as_i64());
         let resp = self
             .inner
@@ -1599,15 +1692,17 @@ impl AxHttpClient {
     pub async fn request_funding_rates(
         &self,
         instrument_id: InstrumentId,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
     ) -> Result<Vec<FundingRateUpdate>, AxHttpError> {
         const PAGE_SIZE: i32 = 100;
 
         let symbol = instrument_id.symbol.inner();
-        let start_ns = start.and_then(|dt| dt.timestamp_nanos_opt()).unwrap_or(0);
+        let start_ns = start
+            .and_then(|dt| i64::try_from(dt.as_nanosecond()).ok())
+            .unwrap_or(0);
         let end_ns = end
-            .and_then(|dt| dt.timestamp_nanos_opt())
+            .and_then(|dt| i64::try_from(dt.as_nanosecond()).ok())
             .unwrap_or_else(|| self.generate_ts_init().as_i64());
         let mut params = GetFundingRatesParams::new(symbol, start_ns, end_ns);
         params.limit = Some(PAGE_SIZE);
@@ -1753,13 +1848,13 @@ impl AxHttpClient {
     pub async fn request_funding_slots(
         &self,
         instrument_id: InstrumentId,
-        date: Option<NaiveDate>,
+        date: Option<Date>,
     ) -> Result<AxFundingSlotsResponse, AxHttpError> {
         let symbol = instrument_id.symbol.inner();
         let mut params = GetFundingSlotsParams::new(symbol);
 
         if let Some(date) = date {
-            params.date = Some(date.format("%Y-%m-%d").to_string());
+            params.date = Some(date.strftime("%Y-%m-%d").to_string());
         }
 
         self.inner.get_funding_slots(&params).await
@@ -1868,7 +1963,7 @@ impl AxHttpClient {
 
     /// Requests open orders from Ax and parses them to Nautilus [`OrderStatusReport`].
     ///
-    /// Requires instruments to be cached for parsing order details.
+    /// Missing instruments are requested from Ax and cached before parsing order details.
     ///
     /// The `cid_resolver` parameter is an optional function that resolves a `cid` (u64)
     /// to a `ClientOrderId`. This is needed for correlating orders submitted via WebSocket.
@@ -1877,8 +1972,11 @@ impl AxHttpClient {
     ///
     /// Returns an error if:
     /// - The HTTP request fails.
-    /// - An order's instrument is not found in the cache.
-    /// - Order parsing fails.
+    /// - An order's instrument cannot be fetched or parsed.
+    ///
+    /// # Notes
+    ///
+    /// Order parsing failures are skipped with a warning.
     pub async fn request_order_status_reports<F>(
         &self,
         account_id: AccountId,
@@ -1986,9 +2084,7 @@ impl AxHttpClient {
         let mut reports = Vec::with_capacity(orders.len());
 
         for order in &orders {
-            let instrument = self
-                .get_instrument(&order.s)
-                .ok_or_else(|| anyhow::anyhow!("Instrument {} not found in cache", order.s))?;
+            let instrument = self.resolve_report_instrument(order.s).await?;
 
             match parse_order_status_report(
                 order,
@@ -2007,9 +2103,99 @@ impl AxHttpClient {
         Ok(reports)
     }
 
+    /// Requests historical orders from Ax and parses them to Nautilus
+    /// [`OrderStatusReport`].
+    ///
+    /// Missing instruments are requested from Ax and cached before parsing order details.
+    ///
+    /// The `cid_resolver` parameter is an optional function that resolves a `cid` (u64)
+    /// to a `ClientOrderId`. This is needed for correlating orders submitted via WebSocket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The HTTP request or pagination contract fails.
+    /// - An order's instrument cannot be fetched or parsed.
+    ///
+    /// # Notes
+    ///
+    /// Order parsing failures are skipped with a warning.
+    pub async fn request_historical_order_status_reports<F>(
+        &self,
+        account_id: AccountId,
+        start: Option<UnixNanos>,
+        end: Option<UnixNanos>,
+        cid_resolver: Option<F>,
+    ) -> anyhow::Result<Vec<OrderStatusReport>>
+    where
+        F: Fn(u64) -> Option<ClientOrderId>,
+    {
+        const PAGE_SIZE: i32 = 100;
+
+        let mut params = GetOrdersParams {
+            start_timestamp_ns: start.map(|timestamp| timestamp.as_i64()),
+            end_timestamp_ns: end.map(|timestamp| timestamp.as_i64()),
+            limit: Some(PAGE_SIZE),
+            ..Default::default()
+        };
+        let mut orders = Vec::new();
+        let mut seen_cursors = HashSet::new();
+        let mut seen_order_ids = HashSet::new();
+
+        loop {
+            let response = self
+                .inner
+                .get_orders(&params)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
+
+            for order in response.orders {
+                anyhow::ensure!(
+                    seen_order_ids.insert(order.oid.clone()),
+                    "AX orders pagination returned duplicate order ID {}",
+                    order.oid
+                );
+                orders.push(order);
+            }
+
+            match response.next_cursor {
+                Some(next_cursor) => {
+                    anyhow::ensure!(
+                        seen_cursors.insert(next_cursor.clone()),
+                        "AX orders pagination repeated cursor {next_cursor:?}"
+                    );
+                    params.cursor = Some(next_cursor);
+                }
+                None => break,
+            }
+        }
+
+        let ts_init = self.generate_ts_init();
+        let mut reports = Vec::with_capacity(orders.len());
+
+        for order in &orders {
+            let instrument = self.resolve_report_instrument(order.s).await?;
+
+            match parse_order_detail_status_report(
+                order,
+                account_id,
+                &instrument,
+                ts_init,
+                cid_resolver.as_ref(),
+            ) {
+                Ok(report) => reports.push(report),
+                Err(e) => {
+                    log::warn!("Failed to parse order {}: {e}", order.oid);
+                }
+            }
+        }
+
+        Ok(reports)
+    }
+
     /// Requests fills from Ax and parses them to Nautilus [`FillReport`].
     ///
-    /// Requires instruments to be cached for parsing fill details.
+    /// Missing instruments are requested from Ax and cached before parsing fill details.
     /// Traverses the provider's cursor chain. This is a best-effort historical
     /// read, not an atomic snapshot if AX corrects rows during the traversal.
     ///
@@ -2017,7 +2203,7 @@ impl AxHttpClient {
     ///
     /// Returns an error if:
     /// - The HTTP request fails.
-    /// - A fill's instrument is not found in the cache.
+    /// - A fill's instrument cannot be fetched or parsed.
     /// - Fill parsing fails.
     pub async fn request_fill_reports(
         &self,
@@ -2130,9 +2316,7 @@ impl AxHttpClient {
         let mut reports = Vec::with_capacity(fills.len());
 
         for fill in &fills {
-            let instrument = self
-                .get_instrument(&fill.symbol)
-                .ok_or_else(|| anyhow::anyhow!("Instrument {} not found in cache", fill.symbol))?;
+            let instrument = self.resolve_report_instrument(fill.symbol).await?;
             let report = parse_fill_report(fill, account_id, &instrument, ts_init)
                 .with_context(|| format!("Failed to parse AX fill {}", fill.trade_id))?;
             reports.push(report);
@@ -2143,14 +2327,17 @@ impl AxHttpClient {
 
     /// Requests positions from Ax and parses them to Nautilus [`PositionStatusReport`].
     ///
-    /// Requires instruments to be cached for parsing position details.
+    /// Missing instruments are requested from Ax and cached before parsing position details.
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - The HTTP request fails.
-    /// - A position's instrument is not found in the cache.
-    /// - Position parsing fails.
+    /// - A position's instrument cannot be fetched or parsed.
+    ///
+    /// # Notes
+    ///
+    /// Position parsing failures are skipped with a warning.
     pub async fn request_position_reports(
         &self,
         account_id: AccountId,
@@ -2170,9 +2357,7 @@ impl AxHttpClient {
                 continue;
             }
 
-            let instrument = self.get_instrument(&position.symbol).ok_or_else(|| {
-                anyhow::anyhow!("Instrument {} not found in cache", position.symbol)
-            })?;
+            let instrument = self.resolve_report_instrument(position.symbol).await?;
 
             match parse_position_status_report(position, account_id, &instrument, ts_init) {
                 Ok(report) => reports.push(report),
@@ -2183,6 +2368,21 @@ impl AxHttpClient {
         }
 
         Ok(reports)
+    }
+
+    async fn resolve_report_instrument(&self, symbol: Ustr) -> anyhow::Result<InstrumentAny> {
+        if let Some(instrument) = self.get_instrument(&symbol) {
+            return Ok(instrument);
+        }
+
+        let instrument = self
+            .request_instrument(symbol, None, None)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to resolve AX instrument {symbol} via GET /instrument: {e}")
+            })?;
+        self.cache_instrument(instrument.clone());
+        Ok(instrument)
     }
 
     /// Cancels all open orders for an instrument.

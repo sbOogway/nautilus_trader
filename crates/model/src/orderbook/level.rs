@@ -38,7 +38,7 @@ use crate::{
 #[derive(Clone, Debug, Eq)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.model", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -186,8 +186,8 @@ impl BookLevel {
         self.orders.insert(order.order_id, order);
     }
 
-    /// Updates an existing order at this price level. Updated order must match the level's price.
-    /// Removes the order if size becomes zero.
+    /// Updates an order at this price level, inserting it if missing. Updated order
+    /// must match the level's price. Removes the order if the size becomes zero.
     pub fn update(&mut self, order: BookOrder) {
         debug_assert_eq!(order.price, self.price.value);
 

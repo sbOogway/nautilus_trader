@@ -85,7 +85,7 @@ pub static COINBASE_WS_SUBSCRIPTION_KEYS: LazyLock<[Ustr; 1]> =
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.coinbase", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.adapters.coinbase", from_py_object)
 )]
 pub struct CoinbaseWebSocketClient {
     url: String,
@@ -241,7 +241,6 @@ impl CoinbaseWebSocketClient {
         let client = WebSocketClient::connect(
             cfg,
             Some(message_handler),
-            None,
             None,
             keyed_quotas,
             Some(*COINBASE_WS_CONNECTION_QUOTA),

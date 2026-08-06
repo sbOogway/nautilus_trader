@@ -294,15 +294,19 @@ fn extract_data_config_from_pyobject(
         .map(|value| value.extract::<bool>())
         .transpose()?
         .unwrap_or(default.subscribe_new_markets);
-    let drop_quotes_missing_side = getattr_optional(obj, "drop_quotes_missing_side")?
-        .map(|value| value.extract::<bool>())
-        .transpose()?
-        .unwrap_or(default.drop_quotes_missing_side);
     let new_market_fetch_max_concurrency =
         getattr_optional(obj, "new_market_fetch_max_concurrency")?
             .map(|value| value.extract::<usize>())
             .transpose()?
             .unwrap_or(default.new_market_fetch_max_concurrency);
+    let drop_quotes_missing_side = getattr_optional(obj, "drop_quotes_missing_side")?
+        .map(|value| value.extract::<bool>())
+        .transpose()?
+        .unwrap_or(default.drop_quotes_missing_side);
+    let compute_effective_deltas = getattr_optional(obj, "compute_effective_deltas")?
+        .map(|value| value.extract::<bool>())
+        .transpose()?
+        .unwrap_or(default.compute_effective_deltas);
     let auto_load_missing_instruments = getattr_optional(obj, "auto_load_missing_instruments")?
         .map(|value| value.extract::<bool>())
         .transpose()?
@@ -346,6 +350,7 @@ fn extract_data_config_from_pyobject(
     };
     let config = PolymarketDataClientConfig {
         instrument_config,
+        filters: Vec::new(),
         base_url_http,
         base_url_ws,
         base_url_rtds,
@@ -357,8 +362,10 @@ fn extract_data_config_from_pyobject(
         ws_max_subscriptions,
         update_instruments_interval_mins,
         subscribe_new_markets,
-        drop_quotes_missing_side,
+        new_market_filter: None,
         new_market_fetch_max_concurrency,
+        drop_quotes_missing_side,
+        compute_effective_deltas,
         auto_load_missing_instruments,
         auto_load_debounce_ms,
         auto_load_max_retries,
@@ -368,8 +375,6 @@ fn extract_data_config_from_pyobject(
         resolve_poll_interval_secs,
         resolve_poll_grace_secs,
         resolve_poll_max_wait_secs,
-        filters: Vec::new(),
-        new_market_filter: None,
         transport_backend,
     };
     validate_data_config(&config)?;
@@ -432,7 +437,7 @@ fn extract_polymarket_exec_config(
     }
 }
 
-/// Loaded as `nautilus_pyo3.polymarket`.
+/// Exposed through `nautilus_trader.adapters.polymarket`.
 #[pymodule]
 pub fn polymarket(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(stringify!(POLYMARKET), POLYMARKET)?;
@@ -560,10 +565,13 @@ mod tests {
                 .set_item("subscribe_new_markets", false)
                 .unwrap();
             config_kwargs
+                .set_item("new_market_fetch_max_concurrency", 13)
+                .unwrap();
+            config_kwargs
                 .set_item("drop_quotes_missing_side", false)
                 .unwrap();
             config_kwargs
-                .set_item("new_market_fetch_max_concurrency", 13)
+                .set_item("compute_effective_deltas", true)
                 .unwrap();
             config_kwargs
                 .set_item("base_url_gamma", "https://gamma.example")
@@ -639,8 +647,9 @@ mod tests {
             assert!(!instrument_config.log_warnings);
             assert_eq!(rust_config.update_instruments_interval_mins, Some(1));
             assert!(!rust_config.subscribe_new_markets);
-            assert!(!rust_config.drop_quotes_missing_side);
             assert_eq!(rust_config.new_market_fetch_max_concurrency, 13);
+            assert!(!rust_config.drop_quotes_missing_side);
+            assert!(rust_config.compute_effective_deltas);
             assert_eq!(
                 rust_config.base_url_gamma.as_deref(),
                 Some("https://gamma.example")

@@ -430,7 +430,7 @@ pub trait Strategy: DataActor {
 
         if !updating {
             log::error!(
-                "Cannot create command ModifyOrder: quantity, price and trigger were either None \
+                "Cannot create command ModifyOrder: quantity, price, and trigger were either None \
                 or the same as existing values"
             );
             return Ok(());
@@ -563,7 +563,7 @@ pub trait Strategy: DataActor {
 
             if !updating {
                 anyhow::bail!(
-                    "Cannot create command BatchModifyOrders: quantity, price and trigger were \
+                    "Cannot create command BatchModifyOrders: quantity, price, and trigger were \
                     either None or the same as existing values for {}",
                     order.client_order_id()
                 );
@@ -2579,7 +2579,9 @@ mod tests {
             .apply(TestOrderEventStubs::accepted(
                 &order,
                 account_id,
-                VenueOrderId::test_default(),
+                // Derived per order: a venue order ID has a single owning client order, so
+                // batch tests holding two accepted orders cannot share the default.
+                VenueOrderId::from(client_order_id),
             ))
             .unwrap();
         order
@@ -2621,7 +2623,8 @@ mod tests {
             .apply(TestOrderEventStubs::accepted(
                 &order,
                 account_id,
-                VenueOrderId::test_default(),
+                // Derived per order, as above.
+                VenueOrderId::from(client_order_id),
             ))
             .unwrap();
         order
@@ -3221,6 +3224,7 @@ mod tests {
                             let cached_order2 = cache.order(&client_order_id2).unwrap();
                             let order_list_id = cached_order1.order_list_id().unwrap();
                             assert_eq!(cached_order2.order_list_id(), Some(order_list_id));
+                            assert_eq!(e.order_list_id, Some(order_list_id));
                             assert!(cache.order_list_exists(&order_list_id));
                             let order_list = cache.order_list(&order_list_id).unwrap();
                             assert_eq!(
@@ -3230,7 +3234,9 @@ mod tests {
                             timeline.borrow_mut().push("init1");
                         }
                         OrderEventAny::Initialized(e) if e.client_order_id == client_order_id2 => {
-                            assert!(cache_rc.borrow().order_exists(&client_order_id2));
+                            let cache = cache_rc.borrow();
+                            let cached_order = cache.order(&client_order_id2).unwrap();
+                            assert_eq!(e.order_list_id, cached_order.order_list_id());
                             timeline.borrow_mut().push("init2");
                         }
                         _ => panic!("unexpected order event {event:?}"),
@@ -3244,7 +3250,15 @@ mod tests {
             TypedIntoHandler::from_with_id(
                 "RiskEngine.queue_execute",
                 move |command: TradingCommand| {
-                    assert!(matches!(command, TradingCommand::SubmitOrderList(_)));
+                    let TradingCommand::SubmitOrderList(command) = command else {
+                        panic!("expected SubmitOrderList command");
+                    };
+                    assert!(
+                        command
+                            .order_inits
+                            .iter()
+                            .all(|init| init.order_list_id == Some(command.order_list.id))
+                    );
                     timeline.borrow_mut().push("command");
                 },
             )
@@ -3258,28 +3272,28 @@ mod tests {
         msgbus::subscribe_order_events(topic.clone().into(), event_handler.clone(), None);
 
         strategy
-            .submit_order_list(orders.clone(), None, None, None)
+            .submit_order_list(orders, None, None, None)
             .unwrap();
 
         msgbus::unsubscribe_order_events(topic.into(), &event_handler);
-
-        let event_messages = event_messages.borrow();
-        assert_eq!(event_messages.len(), 2);
-        assert_eq!(
-            event_messages[0],
-            OrderEventAny::Initialized(orders[0].init_event().clone())
-        );
-        assert_eq!(
-            event_messages[1],
-            OrderEventAny::Initialized(orders[1].init_event().clone())
-        );
-        assert_eq!(timeline.borrow().as_slice(), &["init1", "init2", "command"]);
 
         let cache = strategy.cache();
         let cached_order1 = cache.order(&client_order_id1).unwrap();
         let cached_order2 = cache.order(&client_order_id2).unwrap();
         let order_list_id = cached_order1.order_list_id().unwrap();
         assert_eq!(cached_order2.order_list_id(), Some(order_list_id));
+
+        let event_messages = event_messages.borrow();
+        assert_eq!(event_messages.len(), 2);
+        let OrderEventAny::Initialized(init1) = &event_messages[0] else {
+            panic!("expected first OrderInitialized event");
+        };
+        let OrderEventAny::Initialized(init2) = &event_messages[1] else {
+            panic!("expected second OrderInitialized event");
+        };
+        assert_eq!(init1.order_list_id, Some(order_list_id));
+        assert_eq!(init2.order_list_id, Some(order_list_id));
+        assert_eq!(timeline.borrow().as_slice(), &["init1", "init2", "command"]);
 
         let order_list = cache.order_list(&order_list_id).unwrap();
         assert_eq!(

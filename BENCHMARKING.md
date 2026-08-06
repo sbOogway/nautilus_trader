@@ -77,6 +77,9 @@ or public methods judged to be hot paths. Examples:
 
 - `crates/execution/benches/matching_core.rs`: the `OrderMatchingCore` add /
   delete / lookup / iterate API.
+- `crates/execution/benches/matching_engine.rs`: market data, order submission,
+  passive matching, resting fills, modify, and cancel paths through
+  `OrderMatchingEngine`.
 - `crates/common/benches/matching.rs`: message-bus topic matching.
 - `crates/common/benches/cache_orders.rs`: order cache query and ingest.
 
@@ -101,9 +104,10 @@ These exercise larger units of work: ingesting a tick burst through the
 data engine, replaying a market session, dispatching through the live-node
 runner. Heavier to maintain but a closer proxy for user-observable
 performance than a single-function micro. Examples live under
-`crates/data/benches/`, `crates/live/benches/`, and the Python performance
-suite in `tests/performance_tests/`. Note that `crates/live/benches/` are
-still scoped (e.g. dispatch only, not the full select loop); the deeper
+`crates/backtest/benches/`, `crates/data/benches/`, and `crates/live/benches/`.
+The backtest engine benchmark covers single‑stream and multi‑stream market data replay
+plus representative order workloads. Note that `crates/live/benches/` are still
+scoped (e.g. dispatch only, not the full select loop); the deeper
 runner-plus-engine workload is the ignored stress test at
 `crates/live/tests/stress.rs`.
 
@@ -114,9 +118,9 @@ branch via the
 [`performance` workflow](.github/workflows/performance.yml). The included
 crates are listed in the `CI_BENCH_CRATES` variable of the workspace
 `Makefile` (currently `nautilus-core`, `nautilus-model`, `nautilus-common`,
-and `nautilus-live`). To opt a new bench into nightly CI execution,
-register it in its crate's `Cargo.toml` and ensure that crate is in
-`CI_BENCH_CRATES`.
+`nautilus-execution`, `nautilus-backtest`, and `nautilus-live`). To opt a new
+bench into nightly CI execution, register it in its crate's `Cargo.toml` and
+ensure that crate is in `CI_BENCH_CRATES`.
 
 CI does not currently fail PRs on Rust benchmark deltas: the performance
 workflow only runs on pushes to `nightly`, not on PR opens. Contributors
@@ -125,28 +129,24 @@ should run a local Criterion comparison against `develop` for any PR that
 materially changes a hot path; the nightly run is consulted after the
 fact.
 
-The Python performance suite (`tests/performance_tests/`) runs through
-[CodSpeed](https://codspeed.io/) on the same nightly workflow. The
-nightly dashboard surfaces both regressions and improvements; both are
-worth investigating when they cross the noise threshold.
-
-### Python performance tests vs Rust benches
+### Python benchmarks vs Rust benches
 
 Add a Rust bench (Criterion or iai under `crates/<crate>/benches/`) when
 the work is in Rust and you want either an absolute number or an
-instruction-count change signal. Add a Python performance test
-(`tests/performance_tests/...`, picked up by CodSpeed) when the work
-crosses the Cython/PyO3 boundary or measures end-user Python API cost
-that wouldn't show up in a pure-Rust bench. The two suites are
-complementary: the Rust suite tracks engine performance, the Python suite
-tracks the API surface users actually call.
+instruction‑count change signal. CodSpeed is suitable for a Python benchmark that
+measures end‑user PyO3 API cost not visible in a pure‑Rust bench.
+
+No canonical Python performance suite is wired into CI, so the nightly workflow
+runs only Rust benches. Before wiring a Python benchmark into nightly CI, prove
+that it exercises the `nautilus_trader` package built from `python/pyproject.toml`,
+then add its suite path and runner command in the same change.
 
 ---
 
 ## Tooling at a glance
 
 | Framework                                                     | Measures                                  | Use for                                              |
-|---------------------------------------------------------------|-------------------------------------------|------------------------------------------------------|
+| ------------------------------------------------------------- | ----------------------------------------- | ---------------------------------------------------- |
 | [**Criterion**](https://docs.rs/criterion/latest/criterion/)  | Wall‑clock time with confidence bands     | Anything ≥ 100 ns; absolute measurement; comparison. |
 | [**iai**](https://docs.rs/iai/latest/iai/)                    | Retired CPU instructions (via Cachegrind) | Sub‑100 ns functions; CI change detection.           |
 | [**flamegraph**](https://github.com/flamegraph-rs/flamegraph) | Sampled call‑stack profile                | Investigating where time goes inside a slow bench.   |
@@ -189,9 +189,8 @@ description, with hardware and toolchain noted alongside (see the example
 below). The PR description is the durable home for those numbers; release
 notes get one terse line.
 
-We do not currently maintain a checked-in historical bench database.
-Long-term records live wherever the CI workflow uploads them
-(CodSpeed for the Python suite; Criterion HTML on the runner for Rust).
+We do not maintain a checked‑in historical bench database.
+Store durable results in PR descriptions and release notes.
 
 ---
 
@@ -249,7 +248,7 @@ scaling. Run it directly without the noise mitigations above.
 - Two questions, two tools: Criterion for absolute time, iai for change detection.
 - Bench what you optimize, not what is easy to bench.
 - Reduce noise before quoting numbers; record the machine when you do.
-- Opt into nightly CI execution by adding the crate to the `cargo-ci-benches` recipe.
+- Opt into nightly CI execution by adding the crate to `CI_BENCH_CRATES`.
 - Treat existing benchmarks as documentation of what we believe is hot.
   Regressing one without explanation is a code-review concern.
 

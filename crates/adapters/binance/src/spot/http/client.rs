@@ -34,11 +34,11 @@
 use std::{collections::HashMap, fmt::Debug, num::NonZeroU32, sync::Arc};
 
 use ahash::AHashMap;
-use chrono::{DateTime, Utc};
-use dashmap::DashMap;
+use jiff::Timestamp;
 use nautilus_common::cache::InstrumentLookupError;
 use nautilus_core::{
-    consts::NAUTILUS_USER_AGENT, datetime::SECONDS_IN_DAY, hex, nanos::UnixNanos, time::AtomicTime,
+    collections::AtomicMap, consts::NAUTILUS_USER_AGENT, datetime::SECONDS_IN_DAY, hex,
+    nanos::UnixNanos, time::AtomicTime,
 };
 use nautilus_model::{
     data::{Bar, BarType, BookOrder, TradeTick},
@@ -87,7 +87,7 @@ use crate::{
             BINANCE_SPOT_RATE_LIMITS, BINANCE_VENUE, BinanceRateLimitQuota,
         },
         credential::SigningCredential,
-        encoder::{decode_broker_id, encode_broker_id},
+        encoder::{decode_client_order_id, encode_broker_id},
         enums::{
             BinanceEnvironment, BinanceOrderStatus, BinanceProductType, BinanceRateLimitInterval,
             BinanceRateLimitType, BinanceSelfTradePreventionMode, BinanceSide, BinanceTimeInForce,
@@ -627,7 +627,7 @@ impl BinanceRawSpotHttpClient {
                 query.push('&');
             }
 
-            let timestamp = Utc::now().timestamp_millis();
+            let timestamp = Timestamp::now().as_millisecond();
             query.push_str(&format!("timestamp={timestamp}"));
 
             if let Some(recv_window) = self.recv_window {
@@ -1159,7 +1159,7 @@ impl BinanceRawSpotHttpClient {
             query.push('&');
         }
 
-        let timestamp = Utc::now().timestamp_millis();
+        let timestamp = Timestamp::now().as_millisecond();
         query.push_str(&format!("timestamp={timestamp}"));
 
         if let Some(recv_window) = self.recv_window {
@@ -1316,7 +1316,7 @@ impl BinanceRawSpotHttpClient {
             .ok_or(BinanceSpotHttpError::MissingCredentials)?;
 
         let encoded_batch = Self::percent_encode(batch_json);
-        let timestamp = Utc::now().timestamp_millis();
+        let timestamp = Timestamp::now().as_millisecond();
         let mut query = format!("batchOrders={encoded_batch}&timestamp={timestamp}");
 
         if let Some(recv_window) = self.recv_window {
@@ -2344,7 +2344,7 @@ fn spot_sbe_stp(mode: Option<BinanceSelfTradePreventionMode>) -> SbeSelfTradePre
 pub struct BinanceSpotHttpClient {
     inner: Arc<BinanceRawSpotHttpClient>,
     clock: &'static AtomicTime,
-    instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
+    instruments_cache: Arc<AtomicMap<Ustr, InstrumentAny>>,
 }
 
 impl Clone for BinanceSpotHttpClient {
@@ -2427,7 +2427,7 @@ impl BinanceSpotHttpClient {
         Ok(Self {
             inner: Arc::new(inner),
             clock,
-            instruments_cache: Arc::new(DashMap::new()),
+            instruments_cache: Arc::new(AtomicMap::new()),
         })
     }
 
@@ -2471,26 +2471,26 @@ impl BinanceSpotHttpClient {
     /// Retrieves an instrument from the cache.
     fn instrument_from_cache(&self, symbol: Ustr) -> anyhow::Result<InstrumentAny> {
         self.instruments_cache
-            .get(&symbol)
-            .map(|entry| entry.value().clone())
+            .get_cloned(&symbol)
             .ok_or_else(|| anyhow::anyhow!("Instrument {symbol} not in cache"))
     }
 
     /// Caches multiple instruments.
     pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
-        for inst in instruments {
-            self.instruments_cache
-                .insert(inst.raw_symbol().inner(), inst);
-        }
+        self.instruments_cache.rcu(move |cache| {
+            for instrument in &instruments {
+                cache.insert(instrument.raw_symbol().inner(), instrument.clone());
+            }
+        });
     }
 
     /// Replaces the complete instrument cache.
     pub fn replace_instruments(&self, instruments: &[InstrumentAny]) {
-        self.instruments_cache.clear();
-        for instrument in instruments {
-            self.instruments_cache
-                .insert(instrument.raw_symbol().inner(), instrument.clone());
-        }
+        let cache = instruments
+            .iter()
+            .map(|instrument| (instrument.raw_symbol().inner(), instrument.clone()))
+            .collect();
+        self.instruments_cache.store(cache);
     }
 
     /// Caches a single instrument.
@@ -2502,9 +2502,7 @@ impl BinanceSpotHttpClient {
     /// Gets an instrument from the cache by symbol.
     #[must_use]
     pub fn get_instrument(&self, symbol: &Ustr) -> Option<InstrumentAny> {
-        self.instruments_cache
-            .get(symbol)
-            .map(|entry| entry.value().clone())
+        self.instruments_cache.get_cloned(symbol)
     }
 
     /// Tests connectivity to the API.
@@ -2790,8 +2788,8 @@ impl BinanceSpotHttpClient {
     pub async fn request_agg_trades(
         &self,
         instrument_id: InstrumentId,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<TradeTick>> {
         let symbol = instrument_id.symbol.inner();
@@ -2799,8 +2797,8 @@ impl BinanceSpotHttpClient {
         let params = AggTradesParams {
             symbol: symbol.to_string(),
             from_id: None,
-            start_time: start.map(|dt| dt.timestamp_millis()),
-            end_time: end.map(|dt| dt.timestamp_millis()),
+            start_time: start.map(|dt| dt.as_millisecond()),
+            end_time: end.map(|dt| dt.as_millisecond()),
             limit,
         };
         let response = self.inner.agg_trades(&params).await?;
@@ -2838,8 +2836,8 @@ impl BinanceSpotHttpClient {
     pub async fn request_binance_bars(
         &self,
         bar_type: BarType,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<crate::common::bar::BinanceBar>> {
         anyhow::ensure!(
@@ -2870,8 +2868,8 @@ impl BinanceSpotHttpClient {
             .klines(
                 symbol.as_str(),
                 &interval,
-                start.map(|dt| dt.timestamp_millis()),
-                end.map(|dt| dt.timestamp_millis()),
+                start.map(|dt| dt.as_millisecond()),
+                end.map(|dt| dt.as_millisecond()),
                 limit,
             )
             .await
@@ -2895,8 +2893,8 @@ impl BinanceSpotHttpClient {
     pub async fn request_bars(
         &self,
         bar_type: BarType,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<Bar>> {
         Ok(self
@@ -2992,8 +2990,7 @@ impl BinanceSpotHttpClient {
         instrument_id: InstrumentId,
     ) -> anyhow::Result<InstrumentAny> {
         self.instruments_cache
-            .get(&instrument_id.symbol.inner())
-            .map(|entry| entry.value().clone())
+            .get_cloned(&instrument_id.symbol.inner())
             .ok_or_else(|| InstrumentLookupError::not_found(instrument_id).into())
     }
 
@@ -3087,8 +3084,8 @@ impl BinanceSpotHttpClient {
         &self,
         account_id: AccountId,
         instrument_id: Option<InstrumentId>,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         open_only: bool,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
@@ -3106,8 +3103,8 @@ impl BinanceSpotHttpClient {
             self.inner
                 .all_orders(
                     &symbol,
-                    start.map(|dt| dt.timestamp_millis()),
-                    end.map(|dt| dt.timestamp_millis()),
+                    start.map(|dt| dt.as_millisecond()),
+                    end.map(|dt| dt.as_millisecond()),
                     limit,
                 )
                 .await
@@ -3141,8 +3138,8 @@ impl BinanceSpotHttpClient {
         account_id: AccountId,
         instrument_id: InstrumentId,
         venue_order_id: Option<VenueOrderId>,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<FillReport>> {
         self.request_fill_reports_with_cursor(
@@ -3163,8 +3160,8 @@ impl BinanceSpotHttpClient {
         account_id: AccountId,
         instrument_id: InstrumentId,
         venue_order_id: Option<VenueOrderId>,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
+        start: Option<Timestamp>,
+        end: Option<Timestamp>,
         from_id: Option<i64>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<FillReport>> {
@@ -3181,8 +3178,8 @@ impl BinanceSpotHttpClient {
             .account_trades_with_cursor(
                 symbol.as_str(),
                 order_id,
-                start.map(|dt| dt.timestamp_millis()),
-                end.map(|dt| dt.timestamp_millis()),
+                start.map(|dt| dt.as_millisecond()),
+                end.map(|dt| dt.as_millisecond()),
                 from_id,
                 limit,
             )
@@ -3503,18 +3500,18 @@ impl BinanceSpotHttpClient {
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        Ok(responses
+        responses
             .into_iter()
             .map(|r| {
-                (
+                Ok((
                     VenueOrderId::new(r.order_id.to_string()),
-                    ClientOrderId::new(decode_broker_id(
+                    decode_client_order_id(
                         &r.orig_client_order_id,
                         BINANCE_NAUTILUS_SPOT_BROKER_ID,
-                    )),
-                )
+                    )?,
+                ))
             })
-            .collect())
+            .collect()
     }
 }
 

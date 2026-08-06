@@ -15,7 +15,7 @@
 
 //! Enumerations that model Kraken string/int enums across HTTP and WebSocket payloads.
 
-use nautilus_model::enums::{MarketStatusAction, OrderSide, OrderStatus, OrderType};
+use nautilus_model::enums::{LiquiditySide, MarketStatusAction, OrderSide, OrderStatus, OrderType};
 use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumString, FromRepr};
 
@@ -38,7 +38,7 @@ use strum::{AsRefStr, Display, EnumString, FromRepr};
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
+        module = "nautilus_trader.adapters.kraken",
         eq,
         eq_int,
         frozen,
@@ -78,7 +78,7 @@ pub enum KrakenEnvironment {
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
+        module = "nautilus_trader.adapters.kraken",
         eq,
         eq_int,
         frozen,
@@ -116,12 +116,7 @@ pub enum KrakenProductType {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
@@ -168,12 +163,7 @@ pub enum KrakenOrderType {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
@@ -199,12 +189,7 @@ pub enum KrakenOrderSide {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "UPPERCASE")]
 #[strum(ascii_case_insensitive, serialize_all = "UPPERCASE")]
@@ -240,12 +225,7 @@ pub enum KrakenTimeInForce {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
@@ -274,12 +254,7 @@ pub enum KrakenOrderStatus {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
@@ -305,12 +280,7 @@ pub enum KrakenPositionSide {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(ascii_case_insensitive, serialize_all = "snake_case")]
@@ -347,12 +317,7 @@ pub enum KrakenPairStatus {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
@@ -384,12 +349,7 @@ pub enum KrakenSystemStatus {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
@@ -417,12 +377,7 @@ pub enum KrakenAssetClass {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
@@ -508,12 +463,7 @@ pub enum KrakenFuturesOrderEventType {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "camelCase")]
 #[strum(ascii_case_insensitive, serialize_all = "camelCase")]
@@ -542,12 +492,7 @@ pub enum KrakenFuturesOrderStatus {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
 pub enum KrakenTriggerSignal {
@@ -589,12 +534,7 @@ pub enum KrakenTriggerSignal {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
@@ -605,7 +545,7 @@ pub enum KrakenSpotTrigger {
     Index,
 }
 
-/// Kraken fill type (maker or taker).
+/// Kraken Futures fill classification.
 #[derive(
     Clone,
     Copy,
@@ -622,18 +562,20 @@ pub enum KrakenSpotTrigger {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
-#[serde(rename_all = "lowercase")]
-#[strum(ascii_case_insensitive, serialize_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
+#[strum(ascii_case_insensitive, serialize_all = "camelCase")]
 pub enum KrakenFillType {
     Maker,
     Taker,
+    Liquidation,
+    PartialLiquidation,
+    Assignor,
+    Assignee,
+    TakerAfterEdit,
+    UnwindBankrupt,
+    UnwindCounterparty,
 }
 
 /// Kraken API result status.
@@ -653,12 +595,7 @@ pub enum KrakenFillType {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
@@ -684,12 +621,7 @@ pub enum KrakenApiResult {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(ascii_case_insensitive, serialize_all = "snake_case")]
@@ -717,12 +649,7 @@ pub enum KrakenInstrumentType {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "camelCase")]
 #[strum(ascii_case_insensitive, serialize_all = "camelCase")]
@@ -774,12 +701,7 @@ pub enum KrakenSendStatus {
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(
-        module = "nautilus_trader.core.nautilus_pyo3.kraken",
-        eq,
-        eq_int,
-        from_py_object
-    )
+    pyo3::pyclass(module = "nautilus_trader.adapters.kraken", eq, eq_int, from_py_object)
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(ascii_case_insensitive, serialize_all = "snake_case")]
@@ -802,6 +724,21 @@ impl From<KrakenOrderSide> for OrderSide {
         match value {
             KrakenOrderSide::Buy => Self::Buy,
             KrakenOrderSide::Sell => Self::Sell,
+        }
+    }
+}
+
+impl From<KrakenFillType> for LiquiditySide {
+    fn from(value: KrakenFillType) -> Self {
+        match value {
+            KrakenFillType::Maker => Self::Maker,
+            KrakenFillType::Taker | KrakenFillType::TakerAfterEdit => Self::Taker,
+            KrakenFillType::Liquidation
+            | KrakenFillType::PartialLiquidation
+            | KrakenFillType::Assignor
+            | KrakenFillType::Assignee
+            | KrakenFillType::UnwindBankrupt
+            | KrakenFillType::UnwindCounterparty => Self::NoLiquiditySide,
         }
     }
 }
@@ -921,7 +858,7 @@ pub fn product_type_from_symbol(symbol: &str) -> KrakenProductType {
 
 #[cfg(test)]
 mod tests {
-    use nautilus_model::enums::{MarketStatusAction, OrderType};
+    use nautilus_model::enums::{LiquiditySide, MarketStatusAction, OrderType};
     use rstest::rstest;
 
     use super::*;
@@ -947,6 +884,44 @@ mod tests {
         #[case] expected: OrderType,
     ) {
         assert_eq!(OrderType::from(input), expected);
+    }
+
+    #[rstest]
+    #[case::maker(KrakenFillType::Maker, LiquiditySide::Maker)]
+    #[case::taker(KrakenFillType::Taker, LiquiditySide::Taker)]
+    #[case::liquidation(KrakenFillType::Liquidation, LiquiditySide::NoLiquiditySide)]
+    #[case::partial_liquidation(KrakenFillType::PartialLiquidation, LiquiditySide::NoLiquiditySide)]
+    #[case::assignor(KrakenFillType::Assignor, LiquiditySide::NoLiquiditySide)]
+    #[case::assignee(KrakenFillType::Assignee, LiquiditySide::NoLiquiditySide)]
+    #[case::taker_after_edit(KrakenFillType::TakerAfterEdit, LiquiditySide::Taker)]
+    #[case::unwind_bankrupt(KrakenFillType::UnwindBankrupt, LiquiditySide::NoLiquiditySide)]
+    #[case::unwind_counterparty(KrakenFillType::UnwindCounterparty, LiquiditySide::NoLiquiditySide)]
+    fn test_fill_type_to_liquidity_side(
+        #[case] fill_type: KrakenFillType,
+        #[case] expected: LiquiditySide,
+    ) {
+        assert_eq!(LiquiditySide::from(fill_type), expected);
+    }
+
+    #[rstest]
+    fn test_fill_type_deserialization() {
+        let json = include_str!("../../test_data/futures_fill_types.json");
+        let fill_types: Vec<KrakenFillType> = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            fill_types,
+            vec![
+                KrakenFillType::Maker,
+                KrakenFillType::Taker,
+                KrakenFillType::Liquidation,
+                KrakenFillType::PartialLiquidation,
+                KrakenFillType::Assignor,
+                KrakenFillType::Assignee,
+                KrakenFillType::TakerAfterEdit,
+                KrakenFillType::UnwindBankrupt,
+                KrakenFillType::UnwindCounterparty,
+            ]
+        );
     }
 
     #[rstest]

@@ -55,25 +55,20 @@ rewriting the original.
 ## Data and signal publishing
 
 While the `MessageBus` is a lower-level component that users typically interact with indirectly,
-`Actor` and `Strategy` classes provide convenient methods built on top of it:
+`DataActor` and `Strategy` provide typed methods built on top of it:
 
 ```python
-def publish_data(self, data_type: DataType, data: Data) -> None:
+def publish_data(self, data_type: DataType, data: CustomData) -> None:
 def publish_signal(self, name: str, value, ts_event: int = 0) -> None:
 ```
 
-These methods allow you to publish custom data and signals efficiently without needing to work directly with the `MessageBus` interface.
+These methods publish custom data and signals without exposing the raw message bus to Python.
 
 ## Direct access
 
-For advanced users or specialized use cases, direct access to the message bus is available within `Actor` and `Strategy`
-classes through the `self.msgbus` reference, which provides the full message bus interface.
-
-To publish a custom message directly, you can specify a topic as a `str` and any Python `object` as the message payload, for example:
-
-```python
-self.msgbus.publish("MyTopic", "MyMessage")
-```
+The current Python `DataActor` and `Strategy` APIs do not expose `self.msgbus`. Use custom data or
+signals for supported Python component messaging. Rust components can use the typed message-bus
+facade directly.
 
 ## Messaging styles
 
@@ -82,31 +77,31 @@ Understanding the different messaging styles helps when building trading systems
 
 This guide explains the three primary messaging patterns available in NautilusTrader:
 
-| **Messaging Style**                          | **Purpose**                                 | **Best For**                                          |
-|:---------------------------------------------|:--------------------------------------------|:------------------------------------------------------|
-| **MessageBus - Publish/Subscribe to topics** | Low‑level, direct access to the message bus | Custom events, system‑level communication             |
-| **Actor‑Based - Publish/Subscribe Data**     | Structured trading data exchange            | Trading metrics, indicators, data needing persistence |
-| **Actor‑Based - Publish/Subscribe Signal**   | Lightweight notifications                   | Simple alerts, flags, status updates                  |
+| **Messaging style**                   | **Purpose**                          | **Best for**                                          |
+| :------------------------------------ | :----------------------------------- | :---------------------------------------------------- |
+| **Custom data publish/subscribe**     | Structured trading data exchange     | Trading metrics, indicators, data needing persistence |
+| **Signal publish/subscribe**          | Lightweight notifications            | Simple alerts, flags, and status updates              |
+| **Rust MessageBus publish/subscribe** | Low‑level, typed topic communication | Native runtime components                             |
 
 Each approach serves different purposes. This section helps you decide which pattern to use.
 
-### MessageBus publish/subscribe to topics
+### Rust MessageBus publish/subscribe to topics
 
 #### Concept
 
-The `MessageBus` is the central hub for all messages in NautilusTrader. It enables a **publish/subscribe** pattern
-where components can publish events to **named topics**, and other components can subscribe to receive those messages.
-This decouples components, allowing them to interact indirectly via the message bus.
+The `MessageBus` is the central hub for all messages in NautilusTrader. Rust components can publish
+typed messages to named topics and subscribe handlers to those topics. This low-level interface is
+not part of the current Python actor or strategy surface.
 
 #### Key benefits and use cases
 
-The message bus approach is ideal when you need:
+Direct message-bus access is for native components that need:
 
 - **Cross-component communication** within the system.
-- **Flexibility** to define any topic and send any type of payload (any Python object).
+- **Flexibility** to define typed topics and payloads.
 - **Decoupling** between publishers and subscribers who don't need to know about each other.
 - **Global Reach** where messages can be received by multiple subscribers.
-- Working with events that don't fit within the predefined `Actor` model.
+- Working with events that do not fit the data actor model.
 - Advanced scenarios requiring full control over messaging.
 
 #### Considerations
@@ -114,40 +109,13 @@ The message bus approach is ideal when you need:
 - You must track topic names manually (typos could result in missed messages).
 - You must define handlers manually.
 
-#### Quick overview code
-
-```python
-from nautilus_trader.core.message import Event
-
-# Define a custom event
-class Each10thBarEvent(Event):
-    TOPIC = "each_10th_bar"  # Topic name
-    def __init__(self, bar):
-        self.bar = bar
-
-# Subscribe in a component (in Strategy)
-self.msgbus.subscribe(Each10thBarEvent.TOPIC, self.on_each_10th_bar)
-
-# Publish an event (in Strategy)
-event = Each10thBarEvent(bar)
-self.msgbus.publish(Each10thBarEvent.TOPIC, event)
-
-# Handler (in Strategy)
-def on_each_10th_bar(self, event: Each10thBarEvent):
-    self.log.info(f"Received 10th bar: {event.bar}")
-```
-
-#### Full example
-
-[MessageBus Example](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/backtest/example_09_messaging_with_msgbus)
-
-### Actor-based publish/subscribe data
+### Custom data publish/subscribe
 
 #### Concept
 
-This approach provides a way to exchange trading specific data between `Actor`s in the system.
-(note: each `Strategy` inherits from `Actor`). It inherits from `Data`, which ensures proper timestamping
-and ordering of events - crucial for correct backtest processing.
+Custom data exchanges structured values between data actors and strategies. A `CustomData` value
+carries a `DataType`, payload, event timestamp, and initialization timestamp for routing and event
+ordering.
 
 #### Key benefits and use cases
 
@@ -160,49 +128,50 @@ The Data publish/subscribe approach works well when you need:
 
 #### Considerations
 
-- Requires defining a class that inherits from `Data` or uses `@customdataclass`.
-
-#### Inheriting from `Data` vs. using `@customdataclass`
-
-**Inheriting from `Data` class:**
-
-- Defines abstract properties `ts_event` and `ts_init` that must be implemented by the subclass. These ensure proper data ordering in backtests based on timestamps.
-
-**The `@customdataclass` decorator:**
-
-- Adds `ts_event` and `ts_init` attributes if they are not already present.
-- Provides serialization functions: `to_dict()`, `from_dict()`, `to_bytes()`, `to_arrow()`, etc.
-- Enables data persistence and external communication.
+- The payload must expose `ts_event` and `ts_init`.
+- Persistence requires registering a serializable custom data class.
 
 #### Quick overview code
 
 ```python
-from nautilus_trader.core.data import Data
-from nautilus_trader.model.custom import customdataclass
+from dataclasses import dataclass
 
-@customdataclass
-class GreeksData(Data):
+from nautilus_trader.model import CustomData
+from nautilus_trader.model import DataType
+
+
+@dataclass
+class GreeksData:
     delta: float
     gamma: float
+    ts_event: int
+    ts_init: int
 
-# Publish data (in Actor / Strategy)
-data = GreeksData(delta=0.75, gamma=0.1, ts_event=1_630_000_000_000_000_000, ts_init=1_630_000_000_000_000_000)
-self.publish_data(GreeksData, data)
 
-# Subscribe to receiving data  (in Actor / Strategy)
-self.subscribe_data(GreeksData)
+data_type = DataType("GreeksData")
+data = CustomData(
+    data_type,
+    GreeksData(
+        delta=0.75,
+        gamma=0.1,
+        ts_event=1_630_000_000_000_000_000,
+        ts_init=1_630_000_000_000_000_000,
+    ),
+)
+self.publish_data(data_type, data)
 
-# Handler (this is static callback function with fixed name)
-def on_data(self, data: Data):
-    if isinstance(data, GreeksData):
-        self.log.info(f"Delta: {data.delta}, Gamma: {data.gamma}")
+self.subscribe_data(data_type)
+
+
+def on_data(self, data: CustomData) -> None:
+    if data.data_type == data_type:
+        greeks = data.data
+        self.log.info(f"Delta: {greeks.delta}, Gamma: {greeks.gamma}")
 ```
 
-#### Full example
+See [Custom data](custom_data.md) for registration and persistence.
 
-[Actor-Based Data Example](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/backtest/example_10_messaging_with_actor_data)
-
-### Actor-based publish/subscribe signal
+### Signal publish/subscribe
 
 #### Concept
 
@@ -230,23 +199,25 @@ The Signal messaging approach works well when you need:
 ```python
 # Define signal constants for better organization (optional but recommended)
 import types
+
+from nautilus_trader.common import LogColor
 from nautilus_trader.core.datetime import unix_nanos_to_dt
-from nautilus_trader.common.enums import LogColor
 
 signals = types.SimpleNamespace()
 signals.NEW_HIGHEST_PRICE = "NewHighestPriceReached"
 signals.NEW_LOWEST_PRICE = "NewLowestPriceReached"
 
-# Subscribe to signals (in Actor/Strategy)
+# Subscribe from a DataActor or Strategy
 self.subscribe_signal(signals.NEW_HIGHEST_PRICE)
 self.subscribe_signal(signals.NEW_LOWEST_PRICE)
 
-# Publish a signal (in Actor/Strategy)
+# Publish from a DataActor or Strategy
 self.publish_signal(
     name=signals.NEW_HIGHEST_PRICE,
     value=signals.NEW_HIGHEST_PRICE,  # value can be the same as name for simplicity
     ts_event=bar.ts_event,  # timestamp from triggering event
 )
+
 
 # Handler (this is static callback function with fixed name)
 def on_signal(self, signal):
@@ -257,20 +228,16 @@ def on_signal(self, signal):
                 f"New highest price was reached. | "
                 f"Signal value: {signal.value} | "
                 f"Signal time: {unix_nanos_to_dt(signal.ts_event)}",
-                color=LogColor.GREEN
+                color=LogColor.GREEN,
             )
         case signals.NEW_LOWEST_PRICE:
             self.log.info(
                 f"New lowest price was reached. | "
                 f"Signal value: {signal.value} | "
                 f"Signal time: {unix_nanos_to_dt(signal.ts_event)}",
-                color=LogColor.RED
+                color=LogColor.RED,
             )
 ```
-
-#### Full example
-
-[Actor-Based Signal Example](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/backtest/example_11_messaging_with_actor_signals)
 
 ### Summary and decision guide
 
@@ -278,11 +245,11 @@ Here's a quick reference to help you decide which messaging style to use:
 
 #### Decision guide: Which style to choose?
 
-| **Use Case**                                | **Recommended Approach**                                                        | **Setup required** |
-|:--------------------------------------------|:--------------------------------------------------------------------------------|:-------------------|
-| Custom events or system‑level communication | `MessageBus` + Pub/Sub to topic                                                 | Topic + Handler management |
-| Structured trading data                     | `Actor` + Pub/Sub Data + optional `@customdataclass` if serialization is needed | New class definition inheriting from `Data` (handler `on_data` is predefined) |
-| Simple alerts/notifications                 | `Actor` + Pub/Sub Signal                                                        | Signal name only |
+| **Use case**                           | **Recommended approach**            | **Setup required**                        |
+| :------------------------------------- | :---------------------------------- | :---------------------------------------- |
+| Native system‑level communication      | Rust `MessageBus` publish/subscribe | Typed topic and handler                   |
+| Structured Python component data       | `DataActor` custom data methods     | `DataType`, `CustomData`, and `on_data()` |
+| Simple Python alerts and notifications | `DataActor` signal methods          | Signal name and `on_signal()`             |
 
 ## External egress and ingress
 
@@ -306,6 +273,11 @@ subscribers, then serialized into the existing `BusMessage` wire record:
 - `encoding`: the payload encoding selected from the message bus encoding policy.
 - `payload`: serialized bytes encoded with the selected encoding.
 
+An external producer that writes directly to a Redis stream must include `topic`, `type`, and
+`payload`. The `topic` must be a valid publish topic and cannot contain `*` or `?`. The `encoding`
+field is optional and defaults to JSON when omitted. The receiving node skips entries without
+`type` because it cannot select a payload decoder.
+
 External egress receives that record as `publish(BusMessage)`. This outbound call must not block the
 node's bus thread. Bounded egress implementations drop on a full queue instead of applying
 back-pressure to the trading loop. Closing the message bus closes the configured egress.
@@ -315,6 +287,18 @@ Ingress yields the same `BusMessage { topic, payload_type, encoding, payload }` 
 `republish_external_message` decodes supported inbound messages and republishes them internally
 without forwarding the message back out. The inbound payload type must first be registered for
 streaming on the receiving message bus; unregistered types are skipped without decoding.
+
+For Python custom data, register the class before starting the node:
+
+```python
+from nautilus_trader.model import register_custom_data_class
+
+register_custom_data_class(MyData)
+```
+
+The external‑client subscription registers the payload type for streaming, while
+`register_custom_data_class(...)` installs the process‑wide JSON decoder. Both registrations are
+required. See [Custom data](custom_data.md#registration-architecture) for the class requirements.
 
 For Redis, messages are transmitted via a Multiple-Producer Single-Consumer (MPSC) channel to a
 separate Rust task. That task writes the message to Redis streams.
@@ -347,8 +331,7 @@ def register_serializable_type(
     cls,
     to_dict: Callable[[Any], dict[str, Any]],
     from_dict: Callable[[dict[str, Any]], Any],
-):
-    ...
+): ...
 ```
 
 - `cls`: The type to register.
@@ -359,14 +342,14 @@ def register_serializable_type(
 
 The message bus external backing technology uses a behavior config plus a technology-owned backing
 config. `MessageBusConfig` controls message bus behavior. `RedisMessageBusConfig` owns Redis
-connection settings and implements `MessageBusBackingFactory`.
+connection settings, and `RedisMessageBusFactory` implements `MessageBusBackingFactory`.
 
 ```rust
 use nautilus_common::{
     enums::SerializationEncoding,
-    msgbus::{backing::MessageBusBackingFactory, config::MessageBusConfig},
+    msgbus::{MessageBusBackingFactory, MessageBusConfig},
 };
-use nautilus_infrastructure::redis::msgbus::RedisMessageBusConfig;
+use nautilus_infrastructure::redis::msgbus::{RedisMessageBusConfig, RedisMessageBusFactory};
 
 let config = MessageBusConfig {
     encoding: SerializationEncoding::Json,
@@ -382,8 +365,9 @@ let config = MessageBusConfig {
     ..Default::default()
 };
 
-let backing = RedisMessageBusConfig::default();
-let message_bus_backing = backing.create(trader_id, instance_id, config.clone())?;
+let redis_config = RedisMessageBusConfig::default();
+let factory = RedisMessageBusFactory::new(redis_config);
+let backing = factory.create(trader_id, instance_id, config.clone())?;
 ```
 
 ### Backing config
@@ -401,8 +385,13 @@ for injected egress.
 The Rust live runtime accepts `external_streams` in `MessageBusConfig`, and consumes inbound
 `BusMessage`s when callers inject a `MessageBusExternalIngress` with
 `LiveNodeBuilder::with_external_ingress`. The config names the external stream keys; the injected
-ingress is the concrete runtime source. Rust-native factory wiring from config to a backing remains
-the caller's responsibility.
+ingress is the concrete runtime source. Rust callers can install `RedisMessageBusFactory` with
+`LiveNodeBuilder::with_external_msgbus_factory`. Building fails when a factory is combined with
+separately injected egress or ingress. A factory always installs egress and creates ingress only when
+`external_streams` is non‑empty.
+
+Python exposes the same builder method for built‑in factory classes, including
+`RedisMessageBusFactory`. It does not accept arbitrary Python factory classes.
 
 The built-in Redis ingress starts each configured stream at the current timestamp, so entries that
 already exist when the node starts are not replayed. After startup it advances the last-seen ID for
@@ -502,18 +491,16 @@ specifying which types of messages should be excluded from external publication.
 
 ```python
 from nautilus_trader.config import MessageBusConfig
-from nautilus_trader.model.data import QuoteTick
-from nautilus_trader.model.data import TradeTick
+from nautilus_trader.model import QuoteTick
+from nautilus_trader.model import TradeTick
 
 # Create a MessageBusConfig instance with types filtering
-message_bus = MessageBusConfig(
-    types_filter=[QuoteTick, TradeTick]
-)
+message_bus = MessageBusConfig(types_filter=[QuoteTick, TradeTick])
 ```
 
 ### Stream auto-trimming
 
-The `autotrim_maxlen` option is available only on the v2 Rust/PyO3 `MessageBusConfig`.
+The `autotrim_maxlen` option is available on `MessageBusConfig`.
 
 Use `autotrim_mins` to set a lookback window in minutes and `autotrim_maxlen` to set an
 approximate maximum number of entries for each Redis stream. You can configure either policy or
@@ -530,7 +517,7 @@ Rather than a maximum lookback window based on the current wall clock time.
 
 ## External streams
 
-The message bus within a `TradingNode` (node) is referred to as the "internal message bus".
+The message bus within a `LiveNode` (node) is referred to as the "internal message bus".
 A producer node is one which publishes messages onto an external stream (see [external egress and ingress](#external-egress-and-ingress)).
 The consumer node listens to external streams to receive and publish deserialized message payloads on its internal message bus.
 
@@ -574,20 +561,26 @@ let message_bus = MessageBusConfig {
     ..Default::default()
 };
 
-let backing = RedisMessageBusConfig {
+let redis_config = RedisMessageBusConfig {
     connection_timeout: 2,
     response_timeout: 2,
     ..Default::default()
 };
+
+let mut node = LiveNode::builder(trader_id, Environment::Live)?
+    .with_msgbus_config(message_bus)
+    .with_external_msgbus_factory(Box::new(RedisMessageBusFactory::new(redis_config)))
+    .build()?;
+node.run().await?;
 ```
 
 #### Consumer node
 
 We configure the `MessageBus` of the consumer node to receive messages from the same `"binance"`
-stream. The node listens to the external stream keys when a `MessageBusExternalIngress` is injected
-into the `LiveNodeBuilder`, then publishes these messages onto its internal message bus. We declare
-the client ID `"BINANCE_EXT"` as an external client so the `DataEngine` does not attempt to send
-data commands to this client ID.
+stream. A `RedisMessageBusFactory` creates ingress from `external_streams`, and `LiveNode::run`
+publishes the received messages onto the node's internal message bus. We declare the client ID
+`"BINANCE_EXT"` as an external client so the `DataEngine` does not attempt to send data commands to
+this client ID.
 
 ```rust
 let data_engine = LiveDataEngineConfig {
@@ -600,11 +593,18 @@ let message_bus = MessageBusConfig {
     ..Default::default()
 };
 
-let backing = RedisMessageBusConfig {
+let redis_config = RedisMessageBusConfig {
     connection_timeout: 2,
     response_timeout: 2,
     ..Default::default()
 };
+
+let mut node = LiveNode::builder(trader_id, Environment::Live)?
+    .with_data_engine_config(data_engine)
+    .with_msgbus_config(message_bus)
+    .with_external_msgbus_factory(Box::new(RedisMessageBusFactory::new(redis_config)))
+    .build()?;
+node.run().await?;
 ```
 
 ## Related guides

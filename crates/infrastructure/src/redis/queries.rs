@@ -17,8 +17,8 @@ use std::{collections::HashMap, str::FromStr};
 
 use ahash::AHashMap;
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
 use futures::future::join_all;
+use jiff::Timestamp;
 use nautilus_common::{cache::database::CacheMap, enums::SerializationEncoding};
 use nautilus_model::{
     accounts::AccountAny,
@@ -357,7 +357,8 @@ impl DatabaseQueries {
         encoding: SerializationEncoding,
     ) -> anyhow::Result<AHashMap<InstrumentId, InstrumentAny>> {
         let mut instruments = AHashMap::new();
-        let pattern = format!("{trader_key}{REDIS_DELIMITER}{INSTRUMENTS}*");
+        let prefix = format!("{trader_key}{REDIS_DELIMITER}{INSTRUMENTS}{REDIS_DELIMITER}");
+        let pattern = format!("{prefix}*");
         log::debug!("Loading {pattern}");
 
         let mut con = con.clone();
@@ -367,23 +368,12 @@ impl DatabaseQueries {
             .iter()
             .map(|key| {
                 let con = con.clone();
+                let prefix = &prefix;
                 async move {
-                    let instrument_id = key
-                        .as_str()
-                        .rsplit(':')
-                        .next()
-                        .ok_or_else(|| {
-                            log::error!("Invalid key format: {key}");
-                            "Invalid key format"
-                        })
-                        .and_then(|code| {
-                            InstrumentId::from_str(code).map_err(|e| {
-                                log::error!("Failed to convert to InstrumentId for {key}: {e}");
-                                "Invalid instrument ID"
-                            })
-                        });
+                    let instrument_id = parse_instrument_key(key, prefix);
 
                     let Ok(instrument_id) = instrument_id else {
+                        log::error!("Failed to parse InstrumentId from Redis key: {key}");
                         return None;
                     };
 
@@ -988,6 +978,15 @@ impl DatabaseQueries {
     }
 }
 
+fn parse_instrument_key(key: &str, prefix: &str) -> anyhow::Result<InstrumentId> {
+    let value = key
+        .strip_prefix(prefix)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Invalid instrument key '{key}'"))?;
+    InstrumentId::from_str(value)
+        .map_err(|e| anyhow::anyhow!("Failed to parse instrument ID from key '{key}': {e}"))
+}
+
 fn is_timestamp_field(key: &str) -> bool {
     let expire_match = key == "expire_time_ns";
     let ts_match = key.starts_with("ts_");
@@ -1002,8 +1001,9 @@ fn convert_timestamps(value: &mut Value) {
                     && let Value::Number(n) = v
                     && let Some(n) = n.as_u64()
                 {
-                    let dt = DateTime::<Utc>::from_timestamp_nanos(n.cast_signed());
-                    *v = Value::String(dt.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+                    let dt = Timestamp::from_nanosecond(i128::from(n))
+                        .expect("UnixNanos is within Jiff's timestamp range");
+                    *v = Value::String(format!("{dt:.9}"));
                 }
                 convert_timestamps(v);
             }
@@ -1023,15 +1023,10 @@ fn convert_timestamp_strings(value: &mut Value) {
             for (key, v) in map {
                 if is_timestamp_field(key)
                     && let Value::String(s) = v
-                    && let Ok(dt) = DateTime::parse_from_rfc3339(s)
+                    && let Ok(dt) = s.parse::<Timestamp>()
                 {
-                    *v = Value::Number(
-                        (dt.with_timezone(&Utc)
-                            .timestamp_nanos_opt()
-                            .expect("Invalid DateTime")
-                            .cast_unsigned())
-                        .into(),
-                    );
+                    let nanos = u64::try_from(dt.as_nanosecond()).expect("Invalid timestamp");
+                    *v = Value::Number(nanos.into());
                 }
                 convert_timestamp_strings(v);
             }
@@ -1042,5 +1037,65 @@ fn convert_timestamp_strings(value: &mut Value) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use nautilus_common::enums::SerializationEncoding;
+    use nautilus_core::UnixNanos;
+    use nautilus_model::identifiers::InstrumentId;
+    use rstest::rstest;
+    use serde::Deserialize;
+
+    use super::{DatabaseQueries, parse_instrument_key};
+
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    struct TimestampPayload {
+        ts_event: UnixNanos,
+        ts_init: UnixNanos,
+    }
+
+    #[rstest]
+    #[case(SerializationEncoding::Json)]
+    #[case(SerializationEncoding::MsgPack)]
+    fn test_deserialize_chrono_timestamp_payload(#[case] encoding: SerializationEncoding) {
+        let json = include_bytes!("../../test_data/redis_cache_timestamp_chrono.json");
+        let payload = match encoding {
+            SerializationEncoding::Json => json.to_vec(),
+            SerializationEncoding::MsgPack => {
+                let value = serde_json::from_slice::<serde_json::Value>(json).unwrap();
+                rmp_serde::to_vec(&value).unwrap()
+            }
+            _ => unreachable!(),
+        };
+
+        let result =
+            DatabaseQueries::deserialize_payload::<TimestampPayload>(encoding, &payload).unwrap();
+
+        assert_eq!(
+            result,
+            TimestampPayload {
+                ts_event: UnixNanos::from(1_123_456_789),
+                ts_init: UnixNanos::from(2_987_654_321),
+            }
+        );
+    }
+
+    #[rstest]
+    #[case("0xC31E54c7a869B9FcBEcc14363CF510d1c41fa443.Arbitrum:UniswapV3")]
+    #[case(concat!(
+        "0xc9bc8043294146424a4e4607d8ad837d",
+        "6a659142822bbaaabc83bb57e7447461.Arbitrum:UniswapV4",
+    ))]
+    fn test_parse_instrument_key_preserves_colons_in_venue(#[case] value: &str) {
+        let prefix = "TRADER-001:instruments:";
+        let key = format!("{prefix}{value}");
+
+        let result = parse_instrument_key(&key, prefix).unwrap();
+
+        assert_eq!(result, InstrumentId::from_str(value).unwrap());
     }
 }

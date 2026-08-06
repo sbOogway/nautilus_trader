@@ -56,7 +56,7 @@ use super::consts::{
         eq_int,
         frozen,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.architect_ax",
+        module = "nautilus_trader.adapters.architect_ax",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -138,7 +138,7 @@ impl AxEnvironment {
         eq_int,
         frozen,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.architect_ax",
+        module = "nautilus_trader.adapters.architect_ax",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -262,7 +262,7 @@ impl From<AxCategory> for AssetClass {
         eq_int,
         frozen,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.architect_ax",
+        module = "nautilus_trader.adapters.architect_ax",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -315,17 +315,6 @@ impl TryFrom<OrderSide> for AxOrderSide {
             _ => Err("Invalid order side for AX"),
         }
     }
-}
-
-/// Trade side as returned in private WebSocket execution details.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum AxTradeSide {
-    /// Buy execution.
-    #[serde(rename = "Buy")]
-    Buy,
-    /// Sell execution.
-    #[serde(rename = "Sell")]
-    Sell,
 }
 
 /// How a perpetual symbol's funding accrues over a trading day.
@@ -385,7 +374,7 @@ pub enum AxFundingSlotStatus {
         eq_int,
         frozen,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.architect_ax",
+        module = "nautilus_trader.adapters.architect_ax",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -469,7 +458,7 @@ impl From<AxOrderStatus> for OrderStatus {
         eq_int,
         frozen,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.architect_ax",
+        module = "nautilus_trader.adapters.architect_ax",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -554,7 +543,7 @@ impl TryFrom<TimeInForce> for AxTimeInForce {
         eq_int,
         frozen,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.architect_ax",
+        module = "nautilus_trader.adapters.architect_ax",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -741,7 +730,7 @@ pub enum AxOrderRequestType {
         eq_int,
         frozen,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.architect_ax",
+        module = "nautilus_trader.adapters.architect_ax",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -802,7 +791,7 @@ pub enum AxMdWsMessageType {
         eq_int,
         frozen,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.architect_ax",
+        module = "nautilus_trader.adapters.architect_ax",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -877,7 +866,7 @@ pub enum AxOrderWsMessageType {
         eq_int,
         frozen,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.architect_ax",
+        module = "nautilus_trader.adapters.architect_ax",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -917,7 +906,7 @@ pub enum AxCancelReason {
         eq_int,
         frozen,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.architect_ax",
+        module = "nautilus_trader.adapters.architect_ax",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -1011,14 +1000,11 @@ mod tests {
     }
 
     #[rstest]
-    #[case(AxTradeSide::Buy, "\"Buy\"")]
-    #[case(AxTradeSide::Sell, "\"Sell\"")]
-    fn test_trade_side_serialization(#[case] side: AxTradeSide, #[case] expected: &str) {
-        let json = serde_json::to_string(&side).unwrap();
-        assert_eq!(json, expected);
-
-        let parsed: AxTradeSide = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, side);
+    #[case("\"Buy\"")]
+    #[case("\"Sell\"")]
+    fn test_order_side_rejects_long_form(#[case] json: &str) {
+        let error = serde_json::from_str::<AxOrderSide>(json).unwrap_err();
+        assert_eq!(error.classify(), serde_json::error::Category::Data);
     }
 
     #[rstest]

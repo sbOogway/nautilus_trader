@@ -395,6 +395,46 @@ class StrategyConfig:
     assert "log_events: bool = False" in updated
 
 
+def test_signature_defaults_translate_decimal_constants(tmp_path):
+    rust_file = tmp_path / "crates" / "risk" / "src" / "python" / "sizing.rs"
+    rust_file.parent.mkdir(parents=True)
+    rust_file.write_text(
+        """
+#[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+impl FixedRiskSizer {
+    #[pyo3(signature = (
+        risk,
+        commission_rate=Decimal::ZERO,
+        exchange_rate=Decimal::ONE,
+    ))]
+    fn calculate(
+        risk: Decimal,
+        commission_rate: Decimal,
+        exchange_rate: Decimal,
+    ) -> Quantity {
+        todo!()
+    }
+}
+""".strip(),
+    )
+    content = """
+class FixedRiskSizer:
+    def calculate(
+        self,
+        risk: decimal.Decimal,
+        commission_rate: decimal.Decimal = ...,
+        exchange_rate: decimal.Decimal = ...,
+    ) -> model.Quantity: ...
+""".strip()
+
+    fixups = generate_stubs.collect_rust_class_fixups(tmp_path)
+    updated = generate_stubs.apply_signature_defaults(content, fixups)
+
+    assert "commission_rate: decimal.Decimal = decimal.Decimal(0)" in updated
+    assert "exchange_rate: decimal.Decimal = decimal.Decimal(1)" in updated
+
+
 def test_collect_rust_class_fixups_reads_custom_data_stub_module(tmp_path):
     # Arrange
     rust_file = tmp_path / "crates" / "adapters" / "hyperliquid" / "src" / "data_types.rs"
@@ -1520,9 +1560,6 @@ CONFIG_READBACK_REPLACEMENTS = {
         "BacktestDataConfig",
         "catalog_fs_rust_storage_options",
     ): "catalog_fs_rust_storage_option_keys",
-    ("nautilus_trader.network", "SocketConfig", "handler"): "has_handler",
-    ("nautilus_trader.network", "WebSocketConfig", "headers"): "header_names",
-    ("nautilus_trader.network", "WebSocketConfig", "proxy_url"): "has_proxy_url",
 }
 
 WRITABLE_CONFIG_PROPERTIES = {
@@ -1667,6 +1704,14 @@ def test_live_stub_exposes_builder_engine_config_methods():
         in live_stub
     )
     assert (
+        "def with_msgbus_config(self, config: common.MessageBusConfig) -> LiveNodeBuilder: ..."
+        in live_stub
+    )
+    assert (
+        "def with_external_msgbus_factory(self, factory: typing.Any) -> LiveNodeBuilder: ..."
+        in live_stub
+    )
+    assert (
         "def with_portfolio_config(self, config: portfolio.PortfolioConfig) -> LiveNodeBuilder: ..."
         in live_stub
     )
@@ -1688,6 +1733,8 @@ def test_live_stub_exposes_builder_engine_config_methods():
     ("module_name", "class_name"),
     [
         ("nautilus_trader.adapters.dydx", "DydxClientOrderIdEncoder"),
+        ("nautilus_trader.infrastructure", "RedisMessageBusConfig"),
+        ("nautilus_trader.infrastructure", "RedisMessageBusFactory"),
         ("nautilus_trader.persistence", "DataBackendSession"),
         ("nautilus_trader.persistence", "ParquetDataCatalog"),
         ("nautilus_trader.persistence", "StreamingFeatherWriter"),
@@ -2197,7 +2244,7 @@ def test_generated_config_stubs_include_signature_defaults():
         if updated != content:
             mismatches.append(stub_file.relative_to(WORKSPACE_ROOT).as_posix())
 
-    assert mismatches == [], "Run `make py-stubs-v2`; stale config defaults in " + ", ".join(
+    assert mismatches == [], "Run `make py-stubs`; stale config defaults in " + ", ".join(
         mismatches,
     )
 

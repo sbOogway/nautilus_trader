@@ -1,6 +1,6 @@
 [project]
 name = "nautilus-trader"
-version = "2.0.0rc2"
+version = "2.0.0rc3"
 description = "Production-grade Rust-native trading engine with deterministic event-driven architecture"
 authors = [{ name = "Nautech Systems", email = "info@nautechsystems.io" }]
 classifiers = [
@@ -40,7 +40,7 @@ docs = "https://nautilustrader.io/docs"
 
 [build-system]
 # Keep the maturin pin exact; scripts/maturin-version.bash uses it for CI wheel builds.
-requires = ["maturin==1.14.0", "patchelf"]
+requires = ["maturin==1.14.1", "patchelf"]
 build-backend = "maturin"
 
 [tool.maturin]
@@ -64,7 +64,7 @@ strip = false
 include = ["**/*.pyi"]
 
 [tool.uv]
-required-version = "==0.11.29"
+required-version = "==0.12.1"
 exclude-newer = "3 days"
 # These releases received an extra audit before bypassing the default cooldown.
 exclude-newer-package = { plotly = "8 hours", ruff = "8 hours", tzdata = "8 hours" }
@@ -72,20 +72,37 @@ exclude-newer-package = { plotly = "8 hours", ruff = "8 hours", tzdata = "8 hour
 # unexpected loss of wheel publishing fails `uv lock` instead of silently
 # building from source. Kept in sync with python/uv.lock by
 # scripts/check-no-build-packages.sh (also a pre-commit hook). The local
-# nautilus-trader v2 package is intentionally absent because it must be built
+# nautilus-trader package is intentionally absent because it must be built
 # by maturin.
 no-build-package = [
+  "accessible-pygments",
+  "alabaster",
+  "babel",
+  "beautifulsoup4",
+  "certifi",
+  "charset-normalizer",
   "choreographer",
   "colorama",
   "coverage",
+  "docutils",
   "execnet",
+  "furo",
+  "idna",
+  "imagesize",
   "iniconfig",
+  "jinja2",
   "kaleido",
   "librt",
+  "linkify-it-py",
   "logistro",
+  "markdown-it-py",
+  "markupsafe",
   "maturin",
+  "mdit-py-plugins",
+  "mdurl",
   "mypy",
   "mypy-extensions",
+  "myst-parser",
   "narwhals",
   "numpy",
   "orjson",
@@ -102,20 +119,42 @@ no-build-package = [
   "pytest-cov",
   "pytest-xdist",
   "python-dateutil",
+  "pyyaml",
+  "requests",
+  "roman-numerals",
   "ruff",
   "simplejson",
   "six",
+  "snowballstemmer",
+  "soupsieve",
+  "sphinx",
+  "sphinx-basic-ng",
+  "sphinx-comments",
+  "sphinxcontrib-applehelp",
+  "sphinxcontrib-devhelp",
+  "sphinxcontrib-htmlhelp",
+  "sphinxcontrib-jsmath",
+  "sphinxcontrib-qthelp",
+  "sphinxcontrib-serializinghtml",
   "typing-extensions",
   "tzdata",
+  "uc-micro-py",
+  "urllib3",
 ]
 
 [dependency-groups]
-dev = ["maturin==1.14.0", "mypy>=1.20.2,<2.0.0", "ruff>=0.15.21"]
+dev = ["maturin==1.14.1", "mypy>=1.20.2,<2.0.0", "ruff>=0.16.1"]
 test = [
   "pytest>=9.1.1",
   "pytest-asyncio>=1.4.0",
   "pytest-cov>=7.1.0",
   "pytest-xdist[psutil]>=3.8.0",
+]
+docs = [
+  "furo==2025.12.19",
+  "linkify-it-py>=2.1.0,<3.0.0",
+  "myst-parser>=5.1.0,<6.0.0",
+  "sphinx-comments>=0.0.3,<1.0.0",
 ]
 
 [tool.ruff]
@@ -124,9 +163,13 @@ line-length = 100
 exclude = [
   "stubs/**",
   "nautilus_trader/_libnautilus.pyi",
+  ".git",
   "../build",
   "../dist",
+  "../.git",
+  "../patches",
   "../target",
+  "patches",
 ]
 
 [tool.ruff.lint]
@@ -186,6 +229,7 @@ ignore = [
   "E501", # Line too long (linted separately)
   "E741", # Ambiguous variable name (single char)
   "FURB110", # if-exp-instead-of-or-operator (ternary is often clearer than or)
+  "ISC004", # multi-line string concatenation in collections is intentional for wrapped messages
   "PYI021", # Docstrings should not be included in stubs (OK as this is the natural place for them)
   "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
   "S101", # Use of assert detected (OK in test suite)
@@ -217,17 +261,58 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 "nautilus_trader/adapters/*/__init__.py" = [
   "F405",
 ] # Adapter facades re-export star-imported names in __all__
+"python/nautilus_trader/**/*.pyi" = [
+  "PYI011",
+  "D",
+  "RUF002",
+] # Root-relative form used by repository-wide checks
+"python/nautilus_trader/adapters/*/__init__.py" = [
+  "F405",
+] # Root-relative form used by repository-wide checks
+"docs/getting_started/**/*.py" = [
+  "D",
+  "E402",
+  "I001",
+  "S101",
+  "T20",
+  "B018",
+] # TODO: Remove Jupytext exemptions as these guides are updated
+"docs/tutorials/**/*.py" = [
+  "D",
+  "E402",
+  "I001",
+  "S101",
+  "T20",
+  "B018",
+  "PLW2901",
+] # TODO: Remove Jupytext exemptions as these tutorials are updated
+"docs/how_to/**/*.py" = [
+  "D",
+  "E402",
+  "I001",
+  "S101",
+  "T20",
+  "B018",
+] # TODO: Remove Jupytext exemptions as these guides are updated
 "examples/**/*.py" = [
   "DTZ",
   "S101",
   "S105",
   "S106",
-] # Examples can use naive datetimes, asserts, and mock credentials
+] # TODO: Remove deferred example lint exemptions as examples are updated
+"examples/backtest/notebooks/databento_option_greeks.py" = ["B018"]
+"examples/backtest/synthetic_data_pnl_test.py" = ["FURB171"]
+"examples/other/state_machine/run_example.py" = ["B904"]
 "tests/**/*.py" = [
   "S101",
   "S105",
   "S106",
 ] # Tests can use asserts and mock credentials
+"python/tests/**/*.py" = [
+  "S101",
+  "S105",
+  "S106",
+] # Root-relative form used by repository-wide checks
 
 [tool.ruff.lint.isort]
 force-single-line = true

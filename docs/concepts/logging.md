@@ -28,7 +28,7 @@ flowchart TB
     end
 
     subgraph Filtering["Filtering"]
-        LF["stdout_level / fileout_level<br/>(LoggerConfig)"]
+        LF["log_level / log_level_file<br/>(LoggingConfig)"]
     end
 
     subgraph Logger["Nautilus Logger"]
@@ -67,13 +67,13 @@ flowchart TB
 ```
 
 - **Python and Nautilus components**: Log directly through the Nautilus Logger.
-- **External `log` crate users**: Filtered by `stdout_level`/`fileout_level` in `LoggerConfig`.
+- **External `log` crate users**: Filtered by `log_level`/`log_level_file` in `LoggingConfig`.
 - **External `tracing` crate users**: When enabled, output goes directly to stdout (separate from Nautilus logging), filtered by the `RUST_LOG` environment variable.
 - **Logging thread**: All Nautilus log events are sent through an MPSC channel to a dedicated thread, ensuring the main thread isn't blocked by I/O operations.
 
 ## Configuration
 
-Logging can be configured by importing the `LoggerConfig` object.
+Logging can be configured by importing the `LoggingConfig` object.
 By default, log events with an 'INFO' `LogLevel` and higher are written to stdout/stderr.
 
 Log level (`LogLevel`) values include the following (matching standard log level conventions).
@@ -91,7 +91,7 @@ The following log levels are supported:
 You can set `TRACE` as a filter level to capture trace logs from Rust components, even though Python code cannot emit them directly.
 :::
 
-See the `LoggerConfig` [API Reference](/docs/python-api-latest/common.html#nautilus_trader.common.LoggerConfig) for further details.
+See the `LoggingConfig` [API Reference](/docs/python-api-latest/config.html#nautilus_trader.common.config.LoggingConfig) for further details.
 
 Logging can be configured in the following ways:
 
@@ -106,24 +106,23 @@ Logging can be configured in the following ways:
 - ANSI colors in log lines.
 - Bypass logging entirely.
 - Print Rust config to stdout at initialization.
-- Truncate an existing log file on startup (`clear_log_file`).
+- Optionally initialize logging via the PyO3 bridge (`use_pyo3`) to capture log events emitted by Rust components.
+- Truncate existing log file on startup if it already exists (`clear_log_file`)
 
 ### Standard output logging
 
-Log messages are written to the console via stdout/stderr writers. Set the minimum level with
-`stdout_level`.
+Log messages are written to the console via stdout/stderr writers. The minimum log level can be configured using the `log_level` parameter.
 
 ### File logging
 
 Log files are written to the current working directory by default. The naming convention and rotation behavior are configurable and follow specific patterns based on your settings.
 
-Set the log directory and custom file basename with `FileWriterConfig.directory` and
-`FileWriterConfig.file_name`.
+You can specify a custom log directory using `log_directory` and/or a custom file basename using `log_file_name`.
 
 **Log file formats:**
 
 - `None` (default) - Plain text format with `.log` extension.
-- `"json"` - JSON format with `.jsonl` extension, useful for log aggregation tools.
+- `"json"` - JSON format with `.json` extension, useful for log aggregation tools.
 
 For detailed information about log file naming conventions and rotation behavior, see the [Log file rotation](#log-file-rotation) and [Log file naming convention](#log-file-naming-convention) sections below.
 
@@ -131,20 +130,17 @@ For detailed information about log file naming conventions and rotation behavior
 
 Rotation behavior depends on both the presence of a size limit and whether a custom file name is provided:
 
-- **Size‑based rotation**:
-  - Set `FileWriterConfig.file_rotate` to a `(max_file_size, max_backup_count)` tuple, such as
-    `(100_000_000, 5)` for 100 MB and five backup files.
+- **Size-based rotation**:
+  - Enabled by specifying the `log_file_max_size` parameter (e.g., `100_000_000` for 100 MB).
   - When writing a log entry would make the current file exceed this size, the file is closed and a new one is created.
-  - Rotation file names have millisecond resolution. If a rotation resolves to the active path,
-    logging continues to that file, which may briefly exceed the configured maximum size.
 - **Date-based rotation (default naming only)**:
-  - Applies when `file_rotate` and `file_name` are both unset.
+  - Applies when no `log_file_max_size` is specified and no custom `log_file_name` is provided.
   - At each UTC date change (midnight), the current log file is closed and a new one is started, creating one file per UTC day.
 - **No rotation**:
-  - When `file_name` is set without `file_rotate`, logs continue to append to the same file.
+  - When a custom `log_file_name` is provided without a `log_file_max_size`, logs continue to append to the same file.
   - Note: Size-based rotation takes precedence - if both a custom name and size limit are provided, rotation still occurs.
 - **Backup file management**:
-  - The second value in `file_rotate` limits the total number of rotated files kept.
+  - Controlled by the `log_file_max_backup_count` parameter (default: 5), limiting the total number of rotated files kept.
   - When this limit is exceeded, the oldest backup files are automatically removed.
 
 #### Log file naming convention
@@ -154,58 +150,56 @@ The format depends on whether file rotation is enabled:
 
 **With file rotation enabled**:
 
-- **Format**: `{trader_id}_{%Y-%m-%d_%H%M%S-%3f}_{instance_id}.{log|jsonl}`
-- **Example**: `TESTER-001_2025-04-09_210721-521_d7dc12c8-7008-4042-8ac4-017c3db0fc38.log`
+- **Format**: `{trader_id}_{%Y-%m-%d_%H%M%S:%3f}_{instance_id}.{log|json}`
+- **Example**: `TESTER-001_2025-04-09_210721:521_d7dc12c8-7008-4042-8ac4-017c3db0fc38.log`
 - **Components**:
   - `{trader_id}`: The trader identifier (e.g., `TESTER-001`).
-  - `{%Y-%m-%d_%H%M%S-%3f}`: UTC datetime with millisecond resolution.
+  - `{%Y-%m-%d_%H%M%S:%3f}`: Full ISO 8601-compliant datetime with millisecond resolution.
   - `{instance_id}`: A unique instance identifier.
-  - `{log|jsonl}`: File suffix based on format setting.
+  - `{log|json}`: File suffix based on format setting.
 
 **Without size-based rotation (default naming)**:
 
-- **Format**: `{trader_id}_{%Y-%m-%d}_{instance_id}.{log|jsonl}`
+- **Format**: `{trader_id}_{%Y-%m-%d}_{instance_id}.{log|json}`
 - **Example**: `TESTER-001_2025-04-09_d7dc12c8-7008-4042-8ac4-017c3db0fc38.log`
 - **Components**:
   - `{trader_id}`: The trader identifier.
   - `{%Y-%m-%d}`: Date only (YYYY-MM-DD).
   - `{instance_id}`: A unique instance identifier.
-  - `{log|jsonl}`: File suffix based on format setting.
+  - `{log|json}`: File suffix based on format setting.
 - **Note**: With default naming and no size limit, logs rotate daily at UTC midnight.
 
 **Custom naming**:
 
-If `file_name` is set (e.g., `my_custom_log`):
+If `log_file_name` is set (e.g., `my_custom_log`):
 
 - With rotation disabled: The file will be named exactly as provided (e.g., `my_custom_log.log`).
-- With rotation enabled: The file will include the custom name and timestamp (e.g., `my_custom_log_2025-04-09_210721-521.log`).
+- With rotation enabled: The file will include the custom name and timestamp (e.g., `my_custom_log_2025-04-09_210721:521.log`).
 
 ### Component log filtering
 
-The `component_levels` parameter sets log levels for individual components.
+The `log_component_levels` parameter can be used to set log levels for each component individually.
 The input value should be a dictionary of component ID strings to log level strings: `dict[str, str]`.
 
 Below is an example of a trading node logging configuration that includes some of the options mentioned above:
 
 ```python
-from nautilus_trader.common import LogLevel
-from nautilus_trader.config import FileWriterConfig
-from nautilus_trader.config import LoggerConfig
-from nautilus_trader.config import LiveNodeConfig
-from nautilus_trader.model import TraderId
+from nautilus_trader.config import LoggingConfig
+from nautilus_trader.config import TradingNodeConfig
 
-config_node = LiveNodeConfig(
-    trader_id=TraderId.from_str("TESTER-001"),
-    logging=LoggerConfig(
-        stdout_level=LogLevel.INFO,
-        fileout_level=LogLevel.DEBUG,
-        component_levels={"Portfolio": "INFO"},
-        file_config=FileWriterConfig(file_format="json"),
+config_node = TradingNodeConfig(
+    trader_id="TESTER-001",
+    logging=LoggingConfig(
+        log_level="INFO",
+        log_level_file="DEBUG",
+        log_file_format="json",
+        log_component_levels={ "Portfolio": "INFO" },
     ),
+    ... # Omitted
 )
 ```
 
-For backtesting, the `BacktestEngineConfig` class can be used instead of `LiveNodeConfig`, as the same options are available.
+For backtesting, the `BacktestEngineConfig` class can be used instead of `TradingNodeConfig`, as the same options are available.
 
 ### Environment variable configuration
 
@@ -218,7 +212,7 @@ export NAUTILUS_LOG="stdout=Info;fileout=Debug;RiskEngine=Error;is_colored"
 **Supported keys:**
 
 | Key                   | Type      | Description                                      |
-| --------------------- | --------- | ------------------------------------------------ |
+|-----------------------|-----------|--------------------------------------------------|
 | `stdout`              | Log level | Maximum level for stdout output.                 |
 | `fileout`             | Log level | Maximum level for file output.                   |
 | `is_colored`          | Flag      | Enable ANSI colors (default: true).              |
@@ -235,16 +229,14 @@ For Rust-only binaries, setting `NAUTILUS_LOG` enables lazy initialization of th
 
 ### Components-only logging
 
-When focusing on a subset of noisy systems, enable `log_components_only` to log messages only from
-components listed in `component_levels`. All other components are suppressed regardless of the
-global stdout or file level.
+When focusing on a subset of noisy systems, enable `log_components_only` to log messages only from components explicitly listed in `log_component_levels`. All other components are suppressed regardless of the global `log_level` or file level.
 
 Example (Python configuration):
 
 ```python
-logging = LoggerConfig(
-    stdout_level=LogLevel.INFO,
-    component_levels={
+logging = LoggingConfig(
+    log_level="INFO",
+    log_component_levels={
         "RiskEngine": "DEBUG",
         "Portfolio": "INFO",
     },
@@ -274,14 +266,11 @@ Rust log macros automatically capture the module path when no explicit component
 :::
 
 :::note
-Module path filtering is only available via the `NAUTILUS_LOG` environment variable. The Python
-`component_levels` configuration uses component name matching only.
+Module path filtering is only available via the `NAUTILUS_LOG` environment variable. The Python `log_component_levels` configuration uses component name matching only.
 :::
 
 :::warning
-If `log_components_only=True` (or `log_components_only` is present in the spec string) and
-`component_levels` is empty, no log messages will be emitted to stdout/stderr or files. Add at
-least one component filter or disable components‑only logging.
+If `log_components_only=True` (or `log_components_only` is present in the spec string) and `log_component_levels` is empty, no log messages will be emitted to stdout/stderr or files. Add at least one component filter or disable components-only logging.
 :::
 
 ### Log colors
@@ -290,42 +279,35 @@ ANSI color codes improve log readability in terminals.
 In environments that do not support ANSI color rendering (such as some cloud environments or text editors),
 these color codes may not be appropriate as they can appear as raw text.
 
-Set `LoggerConfig.is_colored=False` for these environments. Disabling colors prevents ANSI color
-codes from being added to log messages,
+To accommodate for such scenarios, the `LoggingConfig.log_colors` option can be set to `false`.
+Disabling `log_colors` will prevent the addition of ANSI color codes to the log messages,
 which avoids raw escape codes in environments without color support.
 
 ## Using a logger directly
 
 It's possible to use `Logger` objects directly, and these can be initialized anywhere (very similar to the Python built-in `logging` API).
 
-If you ***aren't*** using an object which already initializes a `NautilusKernel` (and logging) such as `BacktestEngine` or `LiveNode`,
+If you ***aren't*** using an object which already initializes a `NautilusKernel` (and logging) such as `BacktestEngine` or `TradingNode`,
 then you can activate logging in the following way:
 
 ```python
-from nautilus_trader.common import init_logging
-from nautilus_trader.common import Logger
-from nautilus_trader.common import LogLevel
-from nautilus_trader.core import UUID4
-from nautilus_trader.model import TraderId
+from nautilus_trader.common.component import init_logging
+from nautilus_trader.common.component import Logger
 
-log_guard = init_logging(
-    trader_id=TraderId.from_str("TESTER-001"),
-    instance_id=UUID4(),
-    level_stdout=LogLevel.INFO,
-)
+log_guard = init_logging()
 logger = Logger("MyLogger")
 ```
 
 See the [`init_logging` API Reference](/docs/python-api-latest/common.html) for further details.
 
-Keep the returned `LogGuard` alive for as long as direct logging is needed. The logging subsystem
-supports up to 255 concurrent guards.
+:::warning
+Only one logging subsystem can be initialized per process with an `init_logging` call. Multiple `LogGuard` instances (up to 255) can exist concurrently, and the logging thread will remain active until all guards are dropped.
+:::
 
 ## LogGuard: managing log lifecycle
 
-`init_logging` returns a `LogGuard` that tracks one user of the process‑global logging subsystem.
-`BacktestEngine` and `LiveNode` own their guards internally, so application code does not need to
-acquire a guard from an engine or node.
+The `LogGuard` ensures that the logging subsystem remains active and operational throughout the lifecycle of a process.
+It prevents premature shutdown of the logging subsystem when running multiple engines in the same process.
 
 ### Reference counting implementation
 
@@ -333,12 +315,66 @@ The logging system uses reference counting to track active `LogGuard` instances:
 
 - **Counter increments**: When a new `LogGuard` is created, an atomic counter is incremented.
 - **Counter decrements**: When a `LogGuard` is dropped, the counter is decremented.
-- **Last guard**: When the counter reaches zero, pending file logs are flushed and synced. The
-  process‑global logging thread stays available for later guards.
+- **Logging thread termination**: When the counter reaches zero (last `LogGuard` dropped), the logging thread is properly joined to ensure all pending log messages are written before the process terminates.
 - **Maximum guards**: The system supports up to 255 concurrent `LogGuard` instances. Attempting to create more raises a `RuntimeError`.
 
-Abrupt termination can still lose buffered logs. Dispose engines and nodes normally, and retain the
-guard returned by direct `init_logging` calls until the application no longer needs logging.
+This mechanism ensures that:
+
+1. `LogGuard` keeps the logging thread alive and flushes on drop; abrupt termination (crashes, kill signals) can still lose buffered logs.
+2. The logging thread remains active as long as any `LogGuard` exists.
+3. On graceful shutdown, all buffered logs are properly flushed to their destinations.
+
+### Why use LogGuard?
+
+Without a `LogGuard`, any attempt to run sequential engines in the same process may result in errors such as:
+
+```
+Error sending log event: [INFO] ...
+```
+
+This occurs because the logging subsystem's underlying channel and Rust `Logger` are closed when the first engine is disposed.
+As a result, subsequent engines lose access to the logging subsystem, leading to these errors.
+
+By using a `LogGuard`, you can ensure consistent logging behavior across multiple backtests or engine runs in the same process.
+The `LogGuard` retains the resources of the logging subsystem and ensures that logs continue to function correctly,
+even as engines are disposed and initialized.
+
+:::note
+Using `LogGuard` is required to maintain consistent logging behavior throughout a process with multiple engines.
+:::
+
+## Running multiple engines
+
+The following example demonstrates how to use a `LogGuard` when running multiple engines sequentially in the same process:
+
+```python
+log_guard = None  # Initialize LogGuard reference
+
+for i in range(number_of_backtests):
+    engine = setup_engine(...)
+
+    # Assign reference to LogGuard
+    if log_guard is None:
+        log_guard = engine.get_log_guard()
+
+    # Add actors and execute the engine
+    actors = setup_actors(...)
+    engine.add_actors(actors)
+    engine.run()
+    engine.dispose()  # Dispose safely
+```
+
+### Steps
+
+- **Initialize LogGuard once**: The `LogGuard` is obtained from the first engine (`engine.get_log_guard()`) and is retained throughout the process. This ensures that the logging subsystem remains active.
+- **Dispose engines safely**: Each engine is safely disposed of after its backtest completes. The `LogGuard` remains valid after `engine.dispose()` - only the engine is cleaned up, not the logging subsystem.
+- **Reuse LogGuard**: The same `LogGuard` instance is reused for subsequent engines, preventing the logging subsystem from shutting down prematurely.
+
+### Considerations
+
+- **Multiple LogGuards per process**: The system supports up to 255 concurrent `LogGuard` instances per process. Each guard increments a reference counter when created and decrements it when dropped.
+- **Thread safety**: The logging subsystem, including `LogGuard`, is thread-safe, ensuring consistent behavior even in multi-threaded environments.
+- **Automatic cleanup**: When the last `LogGuard` is dropped (reference count reaches zero), the logging thread is properly joined to ensure all pending logs are written before the process terminates.
 
 ## Tracing subscriber for external Rust libraries
 
@@ -348,12 +384,28 @@ custom Rust components (such as feature extractors or adapters) compiled as sepa
 
 ### Enabling the subscriber
 
-Initialize the tracing subscriber directly:
+Enable the tracing subscriber by setting `use_tracing=True` in `LoggingConfig`:
 
 ```python
-from nautilus_trader.common import init_tracing
+from nautilus_trader.config import LoggingConfig
+from nautilus_trader.config import TradingNodeConfig
 
-init_tracing()
+config_node = TradingNodeConfig(
+    trader_id="TESTER-001",
+    logging=LoggingConfig(
+        log_level="INFO",
+        use_tracing=True,
+    ),
+    ... # Omitted
+)
+```
+
+Alternatively, call `init_tracing()` directly:
+
+```python
+from nautilus_trader.core import nautilus_pyo3
+
+nautilus_pyo3.init_tracing()
 ```
 
 ### Filtering with RUST_LOG
@@ -384,19 +436,20 @@ Example tracing output:
 
 - Tracing output goes directly to stdout, not through the Nautilus logging thread.
 - Tracing events are not written to Nautilus log files.
-- Filtering is controlled exclusively by `RUST_LOG`, independent of `LoggerConfig`.
+- Filtering is controlled exclusively by `RUST_LOG`, independent of `LoggingConfig`.
 
 For external libraries that use the `log` crate (such as `rustls`), their events go through
-the Nautilus logger and are filtered by `stdout_level`/`fileout_level` in `LoggerConfig`.
+the Nautilus logger and are filtered by `log_level`/`log_level_file` in `LoggingConfig`.
 
 :::tip
-`RUST_LOG` only affects crates using `tracing`. For crates using `log`, configure verbosity through
-`LoggerConfig` or the `NAUTILUS_LOG` environment variable (e.g., `NAUTILUS_LOG=stdout=Debug`).
+`RUST_LOG` only affects crates using `tracing`. For crates using `log`, configure verbosity
+via `LoggingConfig` or the `NAUTILUS_LOG` environment variable (e.g., `NAUTILUS_LOG=stdout=Debug`).
 :::
 
 :::note
-The tracing subscriber can only be initialized once per process. A second `init_tracing()` call
-raises an error.
+The tracing subscriber can only be initialized once per process. When using `use_tracing=True` in
+`LoggingConfig`, subsequent kernel creations safely skip re-initialization. Direct calls to
+`init_tracing()` when already initialized will raise an error.
 :::
 
 ## Platform-specific considerations

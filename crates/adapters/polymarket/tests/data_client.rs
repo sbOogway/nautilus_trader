@@ -38,8 +38,8 @@ use axum::{
     response::{Json, Response},
     routing::get,
 };
+use chrono::{Duration as ChronoDuration, Utc};
 use futures_util::StreamExt;
-use jiff::{SignedDuration, Timestamp, tz::Offset};
 use nautilus_common::{
     clients::DataClient,
     live::runner::replace_data_event_sender,
@@ -66,7 +66,6 @@ use nautilus_polymarket::{
     },
     websocket::pool::PolymarketMarketConnectionPool,
 };
-use nautilus_testkit::events::{collect_data_events_until_response, drain_data_events};
 use rstest::rstest;
 use serde_json::Value;
 
@@ -86,10 +85,8 @@ fn load_json(filename: &str) -> Value {
 }
 
 fn future_end_date_string() -> String {
-    let future_date = Offset::UTC
-        .to_datetime(Timestamp::now() + SignedDuration::from_hours(24 * 365))
-        .date();
-    format!("{}T00:00:00Z", future_date.strftime("%Y-%m-%d"))
+    let future_date = (Utc::now() + ChronoDuration::days(365)).date_naive();
+    format!("{}T00:00:00Z", future_date.format("%Y-%m-%d"))
 }
 
 fn set_future_end_date(value: &mut Value) {
@@ -272,6 +269,48 @@ enum UnsupportedGenericSubscription {
     BookDepth10,
     InstrumentStatus,
     InstrumentClose,
+}
+
+async fn drain_data_events(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataEvent>,
+    timeout: Duration,
+) -> Vec<DataEvent> {
+    let mut events = Vec::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+    while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+        events.push(event);
+    }
+    events
+}
+
+async fn collect_data_events_until_response(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataEvent>,
+    request_id: UUID4,
+    timeout: Duration,
+) -> Vec<DataEvent> {
+    let mut events = Vec::new();
+    tokio::time::timeout(timeout, async {
+        loop {
+            let event = rx.recv().await.expect("data event channel closed");
+            let is_correlated_response = matches!(
+                &event,
+                DataEvent::Response(response) if response.correlation_id() == &request_id
+            );
+            events.push(event);
+
+            if is_correlated_response {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for data response {request_id}"));
+
+    while let Ok(event) = rx.try_recv() {
+        events.push(event);
+    }
+
+    events
 }
 
 async fn wait_for_market_payload_count(
@@ -824,7 +863,7 @@ async fn test_request_trades_returns_trades_response() {
 #[rstest]
 #[tokio::test]
 async fn test_request_trades_returns_empty_response_at_offset_ceiling() {
-    let first_timestamp = (Timestamp::now() - SignedDuration::from_hours(24 * (100))).as_second();
+    let first_timestamp = (Utc::now() - ChronoDuration::days(100)).timestamp();
     let trades = (0..10_000)
         .map(|index| {
             serde_json::json!({
@@ -865,7 +904,7 @@ async fn test_request_trades_returns_empty_response_at_offset_ceiling() {
     client
         .request_trades(RequestTrades::new(
             instrument_id,
-            Some(Timestamp::now() - SignedDuration::from_hours(24 * (365))),
+            Some(Utc::now() - ChronoDuration::days(365)),
             None,
             None,
             Some(*POLYMARKET_CLIENT_ID),

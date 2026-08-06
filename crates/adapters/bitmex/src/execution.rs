@@ -18,7 +18,7 @@
 use std::{
     future::Future,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -31,7 +31,7 @@ use futures_util::{StreamExt, pin_mut};
 use nautilus_common::{
     clients::ExecutionClient,
     enums::LogLevel,
-    live::{get_runtime, runner::get_exec_event_sender, task::TaskHandles},
+    live::{get_runtime, runner::get_exec_event_sender},
     messages::execution::{
         BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
         GenerateFillReportsBuilder, GenerateOrderStatusReport, GenerateOrderStatusReports,
@@ -89,7 +89,7 @@ pub struct BitmexExecutionClient {
     _submitter: SubmitBroadcaster,
     _canceller: CancelBroadcaster,
     ws_stream_handle: Option<JoinHandle<()>>,
-    pending_tasks: TaskHandles,
+    pending_tasks: Mutex<Vec<JoinHandle<()>>>,
     dms_task_handle: Option<JoinHandle<()>>,
     dms_running: Arc<AtomicBool>,
 }
@@ -222,7 +222,7 @@ impl BitmexExecutionClient {
             _submitter,
             _canceller,
             ws_stream_handle: None,
-            pending_tasks: TaskHandles::default(),
+            pending_tasks: Mutex::new(Vec::new()),
             dms_task_handle: None,
             dms_running: Arc::new(AtomicBool::new(false)),
         })
@@ -238,11 +238,25 @@ impl BitmexExecutionClient {
             }
         });
 
-        self.pending_tasks.push(handle);
+        let mut guard = self
+            .pending_tasks
+            .lock()
+            .expect("pending task lock poisoned");
+
+        // Remove completed tasks to prevent unbounded growth
+        guard.retain(|h| !h.is_finished());
+        guard.push(handle);
     }
 
     fn abort_pending_tasks(&self) {
-        self.pending_tasks.abort_all();
+        let mut guard = self
+            .pending_tasks
+            .lock()
+            .expect("pending task lock poisoned");
+
+        for handle in guard.drain(..) {
+            handle.abort();
+        }
     }
 
     /// Populates `order_identities` for an order if not already present.

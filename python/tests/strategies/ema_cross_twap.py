@@ -86,12 +86,11 @@ class EMACrossTWAP(EMACross):
 
     def _submit_market(self, side: OrderSide):
         self._order_count += 1
-        client_order_id = ClientOrderId(f"{self.strategy_id}-{self._order_count}")
         order = MarketOrder(
             trader_id=self.trader_id,
             strategy_id=self.strategy_id,
             instrument_id=self._instrument_id,
-            client_order_id=client_order_id,
+            client_order_id=ClientOrderId(f"{self.strategy_id}-{self._order_count}"),
             order_side=side,
             quantity=self._trade_size,
             init_id=UUID4(),
@@ -102,6 +101,5 @@ class EMACrossTWAP(EMACross):
             contingency_type=ContingencyType.NO_CONTINGENCY,
             exec_algorithm_id=self._exec_algorithm_id,
             exec_algorithm_params=self._exec_algorithm_params,
-            exec_spawn_id=client_order_id,
         )
         self.submit_order(order)

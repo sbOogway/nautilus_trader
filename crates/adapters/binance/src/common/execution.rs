@@ -17,12 +17,15 @@
 
 use std::{
     future::Future,
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
-use nautilus_common::live::{get_runtime, task::TaskHandles};
+use nautilus_common::live::get_runtime;
+use nautilus_core::MUTEX_POISONED;
 use nautilus_live::ExecutionClientCore;
 use nautilus_model::identifiers::AccountId;
+use tokio::task::JoinHandle;
 
 /// Spawns an async task and tracks its handle in `pending_tasks`.
 ///
@@ -30,8 +33,8 @@ use nautilus_model::identifiers::AccountId;
 ///
 /// # Panics
 ///
-/// Panics if the task handle storage mutex is poisoned.
-pub fn spawn_task<F>(pending_tasks: &TaskHandles, description: &'static str, fut: F)
+/// Panics if the `pending_tasks` mutex is poisoned.
+pub fn spawn_task<F>(pending_tasks: &Mutex<Vec<JoinHandle<()>>>, description: &'static str, fut: F)
 where
     F: Future<Output = anyhow::Result<()>> + Send + 'static,
 {
@@ -42,16 +45,21 @@ where
         }
     });
 
-    pending_tasks.push(handle);
+    let mut tasks = pending_tasks.lock().expect(MUTEX_POISONED);
+    tasks.retain(|handle| !handle.is_finished());
+    tasks.push(handle);
 }
 
-/// Aborts all pending tasks stored in `pending_tasks`.
+/// Aborts all pending tasks tracked in the mutex.
 ///
 /// # Panics
 ///
-/// Panics if the task handle storage mutex is poisoned.
-pub fn abort_pending_tasks(pending_tasks: &TaskHandles) {
-    pending_tasks.abort_all();
+/// Panics if the `pending_tasks` mutex is poisoned.
+pub fn abort_pending_tasks(pending_tasks: &Mutex<Vec<JoinHandle<()>>>) {
+    let mut tasks = pending_tasks.lock().expect(MUTEX_POISONED);
+    for handle in tasks.drain(..) {
+        handle.abort();
+    }
 }
 
 /// Polls the cache until the account is registered or timeout is reached.
@@ -124,13 +132,12 @@ mod tests {
             .expect("Finished task should complete");
         });
 
-        let pending_tasks = TaskHandles::default();
-        pending_tasks.push(finished);
+        let pending_tasks = Mutex::new(vec![finished]);
 
         spawn_task(&pending_tasks, "test task", async { Ok(()) });
 
         assert_eq!(
-            pending_tasks.len(),
+            pending_tasks.lock().expect(MUTEX_POISONED).len(),
             1,
             "spawn_task should drop finished handles before storing the new one",
         );
@@ -148,12 +155,11 @@ mod tests {
             let _guard = guard;
             tokio::time::sleep(Duration::from_secs(60)).await;
         });
-        let pending_tasks = TaskHandles::default();
-        pending_tasks.push(handle);
+        let pending_tasks = Mutex::new(vec![handle]);
 
         abort_pending_tasks(&pending_tasks);
 
-        assert!(pending_tasks.is_empty());
+        assert!(pending_tasks.lock().expect(MUTEX_POISONED).is_empty());
         tokio::time::timeout(Duration::from_secs(1), drop_rx)
             .await
             .expect("Aborted task should drop its future")

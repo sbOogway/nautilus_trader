@@ -13,20 +13,17 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Static transport, framing, heartbeat, and reconnect configuration for TCP sockets.
+//! Socket configuration.
 //!
-//! # Reconnection strategy
+//! # Reconnection Strategy
 //!
 //! The default configuration uses unlimited reconnection attempts (`reconnect_max_attempts: None`).
-//! This suits long‑lived trading connections because:
+//! This is intentional for trading systems because:
+//! - Venues may be down for extended periods but eventually recover.
+//! - Exponential backoff already prevents resource waste.
+//! - Automatic recovery can be useful when manual intervention is not desirable.
 //!
-//! - Venues may remain unavailable for an extended period and later recover.
-//! - Exponential backoff bounds retry frequency during the outage.
-//! - Automatic recovery avoids requiring manual intervention for a transient failure.
-//!
-//! A connection active for at least 10 seconds resets the attempt count and backoff delay.
-//! Shorter‑lived connections remain part of the same reconnect cycle. Use `Some(n)` primarily for
-//! tests, development, or connections that should stop retrying without intervention.
+//! Use `Some(n)` primarily for testing, development, or non-critical connections.
 
 use std::fmt::Debug;
 
@@ -35,19 +32,27 @@ use tokio_tungstenite::tungstenite::stream::Mode;
 use super::types::TcpMessageHandler;
 use crate::error::{NetworkConfigError, NetworkConfigResult};
 
-/// Configuration for a TCP socket connection.
+/// Configuration for TCP socket connection.
 #[derive(bon::Builder)]
 #[builder(finish_fn(name = build_inner, vis = ""))]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.network", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.network")
+)]
 pub struct SocketConfig {
-    /// The server address as `host:port` or a URL.
+    /// The URL to connect to.
     pub url: String,
-    /// The plain or TLS connection mode.
+    /// The connection mode {Plain, TLS}.
     pub mode: Mode,
-    /// The byte sequence that frames messages in both directions.
+    /// The sequence of bytes which separates lines.
     pub suffix: Vec<u8>,
-    /// The function called for each complete incoming message.
+    /// The optional function to handle incoming messages.
     pub message_handler: Option<TcpMessageHandler>,
-    /// The optional heartbeat as `(interval_seconds, payload)`.
+    /// The optional heartbeat with period and beat message.
     pub heartbeat: Option<(u64, Vec<u8>)>,
     /// The timeout (milliseconds) for reconnection attempts.
     pub reconnect_timeout_ms: Option<u64>,
@@ -59,19 +64,16 @@ pub struct SocketConfig {
     pub reconnect_backoff_factor: Option<f64>,
     /// The maximum jitter (milliseconds) added to reconnection delays.
     pub reconnect_jitter_ms: Option<u64>,
-    /// The maximum number of initial connection attempts. Defaults to 5.
+    /// The maximum number of initial connection attempts (default: 5).
     pub connection_max_retries: Option<u32>,
-    /// The maximum number of reconnection attempts before closing the client.
-    ///
+    /// The maximum number of reconnection attempts before giving up.
     /// - `None`: Unlimited reconnection attempts (default, recommended for production).
-    /// - `Some(n)`: Transitions to CLOSED once `n` consecutive reconnect attempts have either
-    ///   failed or established connections active for less than 10 seconds.
+    /// - `Some(n)`: After n failed attempts, transition to CLOSED state.
     pub reconnect_max_attempts: Option<u32>,
     /// The idle timeout (milliseconds) for the read task.
-    ///
-    /// When set, the read task stops and triggers reconnection if it receives no data within this
-    /// duration. This detects silently dead connections where the server stops sending without
-    /// closing the connection.
+    /// When set, the read task will break and trigger reconnection if no data
+    /// is received within this duration. Useful for detecting silently dead
+    /// connections where the server stops sending without closing.
     pub idle_timeout_ms: Option<u64>,
     /// The path to the certificates directory.
     pub certs_dir: Option<String>,
@@ -97,8 +99,8 @@ impl SocketConfig {
     /// # Errors
     ///
     /// Returns a [`NetworkConfigError`] if `url` is empty, the heartbeat interval or a
-    /// reconnection timing field is not positive, `reconnect_backoff_factor` is outside
-    /// `[1.0, 100.0]`, or `reconnect_delay_initial_ms` exceeds `reconnect_delay_max_ms`.
+    /// reconnection timing field is not positive, `reconnect_backoff_factor` is not finite and
+    /// at least `1.0`, or `reconnect_delay_initial_ms` exceeds `reconnect_delay_max_ms`.
     pub fn validate(&self) -> NetworkConfigResult<()> {
         let mut errors = Vec::new();
 
@@ -137,11 +139,11 @@ impl SocketConfig {
         }
 
         if let Some(factor) = self.reconnect_backoff_factor
-            && !(1.0..=100.0).contains(&factor)
+            && !(factor.is_finite() && factor >= 1.0)
         {
             errors.push(NetworkConfigError::invalid(
                 "reconnect_backoff_factor",
-                format!("must be in range [1.0, 100.0], was {factor}"),
+                format!("must be finite and >= 1.0, was {factor}"),
             ));
         }
 
@@ -268,7 +270,6 @@ mod tests {
 
     #[rstest]
     #[case::too_small(0.5)]
-    #[case::too_large(100.1)]
     #[case::nan(f64::NAN)]
     #[case::infinite(f64::INFINITY)]
     fn test_validate_rejects_invalid_backoff_factor(#[case] factor: f64) {

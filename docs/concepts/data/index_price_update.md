@@ -1,12 +1,13 @@
 # IndexPriceUpdate
 
-`IndexPriceUpdate` represents an external index price used by a derivatives market. Venues often
-use index prices to calculate mark prices, funding, or settlement values.
+`IndexPriceUpdate` represents the external index price used by a derivatives market.
+Venues often derive mark prices, funding calculations, or settlement behavior from
+an index price.
 
 ## Fields
 
 | Field           | Rust type      | Python type    | Required/default | Notes                                    |
-| --------------- | -------------- | -------------- | ---------------- | ---------------------------------------- |
+|-----------------|----------------|----------------|------------------|------------------------------------------|
 | `instrument_id` | `InstrumentId` | `InstrumentId` | Required         | Instrument for the index price.          |
 | `value`         | `Price`        | `Price`        | Required         | Current index price.                     |
 | `ts_event`      | `UnixNanos`    | `int`          | Required         | Event timestamp in nanoseconds.          |
@@ -53,4 +54,4 @@ index = IndexPriceUpdate(
 
 - [MarkPriceUpdate](mark_price_update.md) covers mark prices.
 - [FundingRateUpdate](funding_rate_update.md) covers perpetual funding metadata.
-- [Python API reference](/docs/python-api-latest/model/data.html) lists Python members.
+- [Python API Reference](/docs/python-api-latest/model/data.html) lists Python members.

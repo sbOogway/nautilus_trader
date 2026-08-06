@@ -51,7 +51,7 @@ fn extract_sandbox_exec_config(
     }
 }
 
-/// Exposed through `nautilus_trader.adapters.sandbox`.
+/// Loaded as `nautilus_pyo3.sandbox`.
 ///
 /// # Errors
 ///

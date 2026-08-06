@@ -23,11 +23,7 @@ use crate::{
     data::{BookOrder, OrderBookDelta, OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick},
     enums::{BookType, OrderSide, OrderStatus},
     identifiers::InstrumentId,
-    orderbook::{
-        BookLevel, OrderBook,
-        analysis::book_check_integrity,
-        own::{OwnOrderBook, validate_accepted_buffer},
-    },
+    orderbook::{BookLevel, OrderBook, analysis::book_check_integrity, own::OwnOrderBook},
     types::{Price, Quantity},
 };
 
@@ -164,12 +160,7 @@ impl OrderBook {
     /// Returns an error if:
     /// - The delta's instrument ID does not match this book's instrument ID.
     /// - An `Add` is given with `NoOrderSide` (either explicitly or because the cache lookup failed).
-    /// - An `Add` with `NoOrderSide` matches an order ID on both sides of the book.
     /// - After resolution the delta still has `NoOrderSide` but its action is not `Clear`.
-    ///
-    /// # Notes
-    ///
-    /// An ambiguous `NoOrderSide` `Update` or `Delete` is skipped with a warning.
     #[pyo3(name = "apply_delta")]
     fn py_apply_delta(&mut self, delta: &OrderBookDelta) -> PyResult<()> {
         self.apply_delta_unchecked(delta).map_err(to_pyruntime_err)
@@ -266,16 +257,15 @@ impl OrderBook {
         status: Option<std::collections::HashSet<OrderStatus>>,
         accepted_buffer_ns: Option<u64>,
         ts_now: Option<u64>,
-    ) -> PyResult<IndexMap<Decimal, Decimal>> {
-        validate_accepted_buffer(accepted_buffer_ns, ts_now).map_err(to_pyvalue_err)?;
+    ) -> IndexMap<Decimal, Decimal> {
         let status_set: Option<AHashSet<OrderStatus>> = status.map(|s| s.into_iter().collect());
-        Ok(self.bids_filtered_as_map(
+        self.bids_filtered_as_map(
             depth,
             own_book,
             status_set.as_ref(),
             accepted_buffer_ns,
             ts_now,
-        ))
+        )
     }
 
     #[pyo3(name = "asks_filtered_to_dict")]
@@ -287,16 +277,15 @@ impl OrderBook {
         status: Option<std::collections::HashSet<OrderStatus>>,
         accepted_buffer_ns: Option<u64>,
         ts_now: Option<u64>,
-    ) -> PyResult<IndexMap<Decimal, Decimal>> {
-        validate_accepted_buffer(accepted_buffer_ns, ts_now).map_err(to_pyvalue_err)?;
+    ) -> IndexMap<Decimal, Decimal> {
         let status_set: Option<AHashSet<OrderStatus>> = status.map(|s| s.into_iter().collect());
-        Ok(self.asks_filtered_as_map(
+        self.asks_filtered_as_map(
             depth,
             own_book,
             status_set.as_ref(),
             accepted_buffer_ns,
             ts_now,
-        ))
+        )
     }
 
     #[pyo3(name = "group_bids_filtered")]
@@ -309,25 +298,23 @@ impl OrderBook {
         status: Option<std::collections::HashSet<OrderStatus>>,
         accepted_buffer_ns: Option<u64>,
         ts_now: Option<u64>,
-    ) -> PyResult<IndexMap<Decimal, Decimal>> {
-        validate_accepted_buffer(accepted_buffer_ns, ts_now).map_err(to_pyvalue_err)?;
+    ) -> IndexMap<Decimal, Decimal> {
         let status_set: Option<AHashSet<OrderStatus>> = status.map(|s| s.into_iter().collect());
-        Ok(self.group_bids_filtered(
+        self.group_bids_filtered(
             group_size,
             depth,
             own_book,
             status_set.as_ref(),
             accepted_buffer_ns,
             ts_now,
-        ))
+        )
     }
 
     /// Groups ask quantities into price buckets, truncating to a maximum depth, excluding own orders.
     ///
     /// With `own_book`, subtracts own order sizes, filtered by `status` if provided.
-    /// When `now` is provided, only subtracts orders whose acceptance time plus
-    /// `accepted_buffer_ns` is at or before `now`. When `now` is `None`, acceptance-time
-    /// filtering is disabled.
+    /// Uses `accepted_buffer_ns` to include only orders accepted at least that many
+    /// nanoseconds before `now` (defaults to now).
     #[pyo3(name = "group_asks_filtered")]
     #[pyo3(signature = (group_size, depth=None, own_book=None, status=None, accepted_buffer_ns=None, ts_now=None))]
     fn py_group_asks_filtered(
@@ -338,17 +325,16 @@ impl OrderBook {
         status: Option<std::collections::HashSet<OrderStatus>>,
         accepted_buffer_ns: Option<u64>,
         ts_now: Option<u64>,
-    ) -> PyResult<IndexMap<Decimal, Decimal>> {
-        validate_accepted_buffer(accepted_buffer_ns, ts_now).map_err(to_pyvalue_err)?;
+    ) -> IndexMap<Decimal, Decimal> {
         let status_set: Option<AHashSet<OrderStatus>> = status.map(|s| s.into_iter().collect());
-        Ok(self.group_asks_filtered(
+        self.group_asks_filtered(
             group_size,
             depth,
             own_book,
             status_set.as_ref(),
             accepted_buffer_ns,
             ts_now,
-        ))
+        )
     }
 
     /// Returns a filtered `OrderBook` view with own sizes subtracted from public levels.
@@ -362,7 +348,6 @@ impl OrderBook {
         accepted_buffer_ns: Option<u64>,
         ts_now: Option<u64>,
     ) -> PyResult<Self> {
-        validate_accepted_buffer(accepted_buffer_ns, ts_now).map_err(to_pyvalue_err)?;
         let status_set: Option<AHashSet<OrderStatus>> = status.map(|s| s.into_iter().collect());
         self.filtered_view_checked(
             own_book,

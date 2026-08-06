@@ -29,7 +29,7 @@ use nautilus_model::{
         TrailingOffsetType, TriggerType,
     },
     events::AccountState,
-    identifiers::{AccountId, InstrumentId, TradeId, VenueOrderId},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId},
     reports::{FillReport, OrderStatusReport},
     types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
 };
@@ -41,7 +41,7 @@ use ustr::Ustr;
 use crate::{
     common::{
         consts::BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-        encoder::decode_client_order_id,
+        encoder::decode_broker_id,
         enums::{
             BinanceAlgoStatus, BinanceAlgoType, BinanceContractStatus, BinanceFuturesOrderType,
             BinanceIncomeType, BinanceMarginType, BinanceOrderStatus, BinancePositionSide,
@@ -49,7 +49,7 @@ use crate::{
             BinanceTradingStatus, BinanceWorkingType,
         },
         models::BinanceRateLimit,
-        parse::{parse_millis, parse_required_decimal},
+        parse::parse_required_decimal,
     },
     futures::conversions::{normalize_futures_asset, parse_good_till_date},
 };
@@ -227,8 +227,7 @@ pub struct BinanceFuturesUsdSymbol {
     pub symbol: Ustr,
     /// Trading pair (e.g., "BTCUSDT").
     pub pair: Ustr,
-    /// Contract type (PERPETUAL, TRADIFI_PERPETUAL, CURRENT_MONTH, NEXT_MONTH,
-    /// CURRENT_QUARTER, NEXT_QUARTER).
+    /// Contract type (PERPETUAL, CURRENT_MONTH, NEXT_MONTH, CURRENT_QUARTER, NEXT_QUARTER).
     pub contract_type: String,
     /// Delivery date timestamp.
     pub delivery_date: i64,
@@ -980,9 +979,7 @@ impl BinanceFuturesAccountInfo {
 
         let ts_event = self
             .update_time
-            .map(|value| parse_millis(value, "Futures account update time"))
-            .transpose()?
-            .unwrap_or(ts_init);
+            .map_or(ts_init, |t| UnixNanos::from_millis(t as u64));
 
         Ok(AccountState::new(
             account_id,
@@ -1116,7 +1113,7 @@ impl BinanceFuturesOrder {
     ///
     /// # Errors
     ///
-    /// Returns an error if client order ID, quantity, or price parsing fails.
+    /// Returns an error if quantity or price parsing fails.
     pub fn to_order_status_report(
         &self,
         account_id: AccountId,
@@ -1128,12 +1125,12 @@ impl BinanceFuturesOrder {
     ) -> anyhow::Result<OrderStatusReport> {
         let ts_event = self
             .update_time
-            .map(|value| parse_millis(value, "Futures order update time"))
-            .transpose()?
-            .unwrap_or(ts_init);
+            .map_or(ts_init, |t| UnixNanos::from_millis(t as u64));
 
-        let client_order_id =
-            decode_client_order_id(&self.client_order_id, BINANCE_NAUTILUS_FUTURES_BROKER_ID)?;
+        let client_order_id = ClientOrderId::new(decode_broker_id(
+            &self.client_order_id,
+            BINANCE_NAUTILUS_FUTURES_BROKER_ID,
+        ));
         let venue_order_id = VenueOrderId::new(self.order_id.to_string());
 
         let order_side = match self.side {
@@ -1275,7 +1272,7 @@ impl BinanceUserTrade {
         bnfcr_currency: Currency,
         ts_init: UnixNanos,
     ) -> anyhow::Result<FillReport> {
-        let ts_event = parse_millis(self.time, "Futures user trade time")?;
+        let ts_event = UnixNanos::from_millis(self.time as u64);
 
         let venue_order_id = VenueOrderId::new(self.order_id.to_string());
         let trade_id = TradeId::new(self.id.to_string());
@@ -1445,8 +1442,7 @@ impl BinanceFuturesAlgoOrder {
     ///
     /// # Errors
     ///
-    /// Returns an error if client order ID, quantity, price, trigger, or trailing fields cannot be
-    /// parsed.
+    /// Returns an error if quantity, price, trigger, or trailing fields cannot be parsed.
     pub fn to_order_status_report(
         &self,
         account_id: AccountId,
@@ -1458,12 +1454,12 @@ impl BinanceFuturesAlgoOrder {
         let ts_event = self
             .update_time
             .or(self.create_time)
-            .map(|value| parse_millis(value, "Futures algo order time"))
-            .transpose()?
-            .unwrap_or(ts_init);
+            .map_or(ts_init, |t| UnixNanos::from_millis(t as u64));
 
-        let client_order_id =
-            decode_client_order_id(&self.client_algo_id, BINANCE_NAUTILUS_FUTURES_BROKER_ID)?;
+        let client_order_id = ClientOrderId::new(decode_broker_id(
+            &self.client_algo_id,
+            BINANCE_NAUTILUS_FUTURES_BROKER_ID,
+        ));
         let venue_order_id = self
             .actual_order_id
             .as_ref()
@@ -1570,8 +1566,7 @@ impl BinanceFuturesAlgoOrder {
         }
 
         if let Some(trigger_time) = self.trigger_time {
-            report =
-                report.with_ts_triggered(parse_millis(trigger_time, "Futures algo trigger time")?);
+            report = report.with_ts_triggered(UnixNanos::from_millis(trigger_time as u64));
         }
 
         Ok(report)
@@ -1802,7 +1797,6 @@ pub struct BinanceFuturesAlgoOrderCancelResponse {
 
 #[cfg(test)]
 mod tests {
-    use nautilus_model::identifiers::ClientOrderId;
     use rstest::rstest;
     use rust_decimal_macros::dec;
 
@@ -2276,26 +2270,6 @@ mod tests {
             Some(ClientOrderId::from("O-20200101-000000-000-000-0")),
         );
         assert_eq!(report.price, Some(Price::from("50000.00")));
-    }
-
-    #[rstest]
-    fn test_order_to_report_rejects_invalid_client_order_id() {
-        let mut order = order_with_price("50000.00");
-        order.client_order_id = String::new();
-
-        let result = order.to_order_status_report(
-            AccountId::from("BINANCE-FUTURES-001"),
-            InstrumentId::from("BTCUSDT-PERP.BINANCE"),
-            2,
-            3,
-            false,
-            UnixNanos::from(1_000_000_000u64),
-        );
-
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "invalid Binance client order ID ''"
-        );
     }
 
     #[rstest]
@@ -2792,25 +2766,6 @@ mod tests {
         assert_eq!(
             report.client_order_id,
             Some(ClientOrderId::from("my-algo-order-1")),
-        );
-    }
-
-    #[rstest]
-    fn test_algo_order_to_report_rejects_invalid_client_order_id() {
-        let mut order = algo_order_with_price(None);
-        order.client_algo_id = "x-aHRE4BCj-R".to_string();
-
-        let result = order.to_order_status_report(
-            AccountId::from("BINANCE-FUTURES-001"),
-            InstrumentId::from("BTCUSDT-PERP.BINANCE"),
-            2,
-            3,
-            UnixNanos::from(1_000_000_000u64),
-        );
-
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "missing raw broker client order ID payload"
         );
     }
 

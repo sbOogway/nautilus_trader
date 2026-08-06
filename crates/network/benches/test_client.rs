@@ -13,7 +13,6 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use futures_util::future::join_all;
 use nautilus_network::http::InnerHttpClient;
 use reqwest::Method;
 
@@ -37,7 +36,7 @@ async fn main() {
             ));
         }
 
-        let resp = join_all(reqs.drain(0..)).await;
+        let resp = futures::future::join_all(reqs.drain(0..)).await;
         assert!(resp.iter().all(|res| if let Ok(resp) = res {
             resp.status.is_success()
         } else {

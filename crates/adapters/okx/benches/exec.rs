@@ -80,8 +80,6 @@ fn build_place_limit() -> OKXPlaceOrderRequest {
         speed_bump: None,
         outcome: None,
         slippage_pct: None,
-        rpi_taker_access: None,
-        rpi_px_round: None,
     }
 }
 
@@ -105,8 +103,6 @@ fn build_place_market() -> OKXPlaceOrderRequest {
         speed_bump: None,
         outcome: None,
         slippage_pct: None,
-        rpi_taker_access: None,
-        rpi_px_round: None,
     }
 }
 

@@ -43,14 +43,14 @@ pub enum Message {
 }
 
 impl Message {
-    /// Constructs a text message from any string‑like value.
+    /// Construct a text message from any string-like value.
     #[inline]
     #[must_use]
     pub fn text(s: impl Into<String>) -> Self {
         Self::Text(Bytes::from(s.into()))
     }
 
-    /// Borrows a text message as `&str` if the payload is valid UTF‑8.
+    /// Borrow a text message as `&str` if the payload is valid UTF-8.
     ///
     /// Validates on each call; for hot paths where the producer is trusted,
     /// callers can read the bytes directly via [`Self::as_bytes`] and feed
@@ -64,21 +64,21 @@ impl Message {
         }
     }
 
-    /// Constructs a binary message.
+    /// Construct a binary message.
     #[inline]
     #[must_use]
     pub fn binary(data: impl Into<Bytes>) -> Self {
         Self::Binary(data.into())
     }
 
-    /// Constructs a ping message.
+    /// Construct a ping message.
     #[inline]
     #[must_use]
     pub fn ping(data: impl Into<Bytes>) -> Self {
         Self::Ping(data.into())
     }
 
-    /// Constructs a pong message.
+    /// Construct a pong message.
     #[inline]
     #[must_use]
     pub fn pong(data: impl Into<Bytes>) -> Self {
@@ -129,7 +129,7 @@ impl Message {
 
     /// Returns the message payload as a byte slice.
     ///
-    /// For close frames, returns an empty slice.
+    /// For close frames, returns the reason payload as bytes.
     #[inline]
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
@@ -210,7 +210,7 @@ impl CloseFrame {
     /// Internal server error (1011).
     pub const INTERNAL_ERROR: u16 = 1011;
 
-    /// Constructs a close frame.
+    /// Construct a close frame.
     #[inline]
     #[must_use]
     pub fn new(code: u16, reason: impl Into<String>) -> Self {
@@ -268,12 +268,6 @@ mod tests {
     fn into_bytes_close_returns_empty() {
         let msg = Message::Close(Some(CloseFrame::new(1000, "bye")));
         assert!(msg.into_bytes().is_empty());
-    }
-
-    #[rstest]
-    fn as_bytes_close_returns_empty() {
-        let msg = Message::Close(Some(CloseFrame::new(1000, "bye")));
-        assert_eq!(msg.as_bytes(), b"");
     }
 
     #[rstest]

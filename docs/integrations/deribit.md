@@ -33,7 +33,7 @@ and won't need to work directly with these lower-level components.
 ### Product support
 
 | Product type      | Data feed | Trading | Notes                                          |
-| ----------------- | --------- | ------- | ---------------------------------------------- |
+|-------------------|-----------|---------|------------------------------------------------|
 | Perpetual futures | ✓         | ✓       | Loaded with `DeribitProductType.FUTURE`.       |
 | Dated futures     | ✓         | ✓       | Loaded with `DeribitProductType.FUTURE`.       |
 | Options           | ✓         | ✓       | Loaded with `DeribitProductType.OPTION`.       |
@@ -209,7 +209,7 @@ subscriber to both the combo and an underlying leg sees one combo tick plus one 
 that combo trade, not duplicate ticks against the same instrument.
 
 To have the Deribit data client open the real leg trade channels alongside a combo trade
-subscription, pass `params={"subscribe_combo_legs": True}` to `subscribe_trades`. When
+subscription, pass `params={"subscribe_combo_legs": True}` to `subscribe_trade_ticks`. When
 unsubscribing that combo trade stream, Nautilus also closes the leg subscriptions opened by
 this opt-in.
 
@@ -250,7 +250,7 @@ The raw Deribit `trade_id` is preserved after the prefix, so reconciliation agai
 Deribit's own IDs is a prefix strip.
 
 | Prefix       | Source field     | Meaning                                                        |
-| ------------ | ---------------- | -------------------------------------------------------------- |
+|--------------|------------------|----------------------------------------------------------------|
 | `RFQ-`       | `block_rfq_id`   | Trade originated from a Block RFQ.                             |
 | `BLK-`       | `block_trade_id` | Trade is a non‑RFQ block trade.                                |
 | `COMBO-`     | `combo_id`       | Per‑leg trade whose parent originated from a combo instrument. |
@@ -298,7 +298,7 @@ This groups multiple order book changes into single messages.
 The Nautilus adapter supports both feed types via subscription parameters:
 
 | Parameter  | Values                 | Notes                                                                     |
-| ---------- | ---------------------- | ------------------------------------------------------------------------- |
+|------------|------------------------|---------------------------------------------------------------------------|
 | `interval` | `raw`, `100ms`, `agg2` | `agg2` batches at about 1 second intervals. `raw` requires auth.          |
 | `group`    | `none`, price group    | Default: `none`. Applies only to grouped non‑raw book channels.           |
 | `depth`    | `1`, `10`, `20`        | Default: `10`. Number of price levels per side for grouped book channels. |
@@ -310,25 +310,22 @@ The data client chooses the order book interval as follows:
 3. Uses Deribit's public `100ms` grouped feed when the connection is not authenticated.
 
 ```python
-from nautilus_trader.model import BookType
-from nautilus_trader.model import InstrumentId
+from nautilus_trader.model.identifiers import InstrumentId
 
 instrument_id = InstrumentId.from_str("BTC-PERPETUAL.DERIBIT")
 
 # Public 100ms aggregated feed when no API credentials are configured.
-strategy.subscribe_book_deltas(instrument_id, BookType.L2_MBP)
+strategy.subscribe_order_book_deltas(instrument_id)
 
 # Raw feed. This is also the authenticated default when no interval is supplied.
-strategy.subscribe_book_deltas(
+strategy.subscribe_order_book_deltas(
     instrument_id,
-    BookType.L2_MBP,
     params={"interval": "raw"},
 )
 
 # Force an aggregated feed on an authenticated connection.
-strategy.subscribe_book_deltas(
+strategy.subscribe_order_book_deltas(
     instrument_id,
-    BookType.L2_MBP,
     params={"interval": "100ms", "depth": 10},
 )
 ```
@@ -363,7 +360,7 @@ Below are the order types, execution instructions, and time-in-force options sup
 ### Order types
 
 | Nautilus order type    | Deribit order type | Supported | Notes                                   |
-| ---------------------- | ------------------ | --------- | --------------------------------------- |
+|------------------------|--------------------|-----------|-----------------------------------------|
 | `MARKET`               | `market`           | ✓         | Immediate execution at market price.    |
 | `LIMIT`                | `limit`            | ✓         | Execution at specified price or better. |
 | `STOP_MARKET`          | `stop_market`      | ✓         | Conditional market order on trigger.    |
@@ -377,14 +374,14 @@ Below are the order types, execution instructions, and time-in-force options sup
 ### Execution instructions
 
 | Instruction   | Supported | Notes                                                                            |
-| ------------- | --------- | -------------------------------------------------------------------------------- |
+|---------------|-----------|----------------------------------------------------------------------------------|
 | `post_only`   | ✓         | Order will be rejected if it would take liquidity. Uses `reject_post_only=true`. |
 | `reduce_only` | ✓         | Order can only reduce an existing position.                                      |
 
 ### Time in force
 
 | Time in force | Supported | Notes                                                |
-| ------------- | --------- | ---------------------------------------------------- |
+|---------------|-----------|------------------------------------------------------|
 | `GTC`         | ✓         | Good till canceled (`good_til_cancelled`).           |
 | `GTD`         | ✓         | Good till day. Expires at 8:00 UTC (`good_til_day`). |
 | `IOC`         | ✓         | Immediate or cancel (`immediate_or_cancel`).         |
@@ -405,7 +402,7 @@ will be logged as warnings and the order will use the exchange's fixed expiry be
 Conditional orders (stop orders) support different trigger price sources:
 
 | Trigger type  | Supported | Notes                                 |
-| ------------- | --------- | ------------------------------------- |
+|---------------|-----------|---------------------------------------|
 | `last_price`  | ✓         | Uses the last traded price (default). |
 | `mark_price`  | ✓         | Uses the mark price.                  |
 | `index_price` | ✓         | Uses the underlying index price.      |
@@ -425,7 +422,7 @@ strategy.submit_order(stop_order)
 ### Batch operations
 
 | Operation                | Supported | Notes                                                                    |
-| ------------------------ | --------- | ------------------------------------------------------------------------ |
+|--------------------------|-----------|--------------------------------------------------------------------------|
 | Submit order list        | ✓         | Sends each order as an individual Deribit order. No atomic venue batch.  |
 | Batch cancel by order ID | ✓         | Sends individual `private/cancel` requests for each venue order ID.      |
 | Cancel all by instrument | ✓         | Uses `private/cancel_all_by_instrument` when no side filter is supplied. |
@@ -454,11 +451,11 @@ This allows strategies to differentiate between:
 The adapter uses Deribit's native `private/edit` endpoint rather than cancel-and-replace.
 This provides several advantages:
 
-| Benefit                     | Description                                                       |
-| --------------------------- | ----------------------------------------------------------------- |
-| Single request              | Faster execution, lower latency than cancel + new order.          |
+| Benefit                    | Description                                                        |
+|----------------------------|--------------------------------------------------------------------|
+| Single request             | Faster execution, lower latency than cancel + new order.           |
 | Queue priority preservation | Keeps position when only reducing quantity or keeping same price. |
-| Fill history maintained     | Partial fills remain linked to the same order ID.                 |
+| Fill history maintained    | Partial fills remain linked to the same order ID.                  |
 
 **Queue priority rules:**
 
@@ -468,26 +465,26 @@ This provides several advantages:
 
 ### Position management
 
-| Feature          | Supported | Notes                                                              |
-| ---------------- | --------- | ------------------------------------------------------------------ |
-| Query positions  | ✓         | Real‑time position updates.                                        |
-| Position mode    | -         | *Not supported by Deribit*: net position mode only.                |
-| Leverage control | -         | *Not supported by Deribit*: no direct leverage setting.            |
+| Feature          | Supported | Notes                                                             |
+|------------------|-----------|-------------------------------------------------------------------|
+| Query positions  | ✓         | Real‑time position updates.                                       |
+| Position mode    | -         | *Not supported by Deribit*: net position mode only.               |
+| Leverage control | -         | *Not supported by Deribit*: no direct leverage setting.           |
 | Margin mode      | -         | *Not currently implemented*: Deribit exposes account margin modes. |
 
 ### Order querying
 
-| Feature              | Supported | Notes                          |
-| -------------------- | --------- | ------------------------------ |
-| Query open orders    | ✓         | List all active orders.        |
-| Query order history  | ✓         | Historical order data.         |
-| Order status updates | ✓         | Real‑time order state changes. |
-| Trade history        | ✓         | Execution and fill reports.    |
+| Feature              | Supported | Notes                             |
+|----------------------|-----------|-----------------------------------|
+| Query open orders    | ✓         | List all active orders.           |
+| Query order history  | ✓         | Historical order data.            |
+| Order status updates | ✓         | Real‑time order state changes.    |
+| Trade history        | ✓         | Execution and fill reports.       |
 
 ### Contingent orders
 
 | Feature                        | Supported | Notes                                                              |
-| ------------------------------ | --------- | ------------------------------------------------------------------ |
+|--------------------------------|-----------|--------------------------------------------------------------------|
 | Order lists                    | ✓*        | Submitted sequentially. The adapter does not provide atomic lists. |
 | Native linked orders           | -         | *Not currently implemented*: Deribit supports linked orders.       |
 | OCO orders                     | -         | *Not currently implemented*: Deribit supports OCO links.           |
@@ -502,7 +499,7 @@ Deribit tags any trade that was triggered by a liquidation. On the
 `liquidation` field indicates which side was being liquidated:
 
 | Value  | Meaning                       |
-| ------ | ----------------------------- |
+|--------|-------------------------------|
 | `"M"`  | Maker side was liquidated.    |
 | `"T"`  | Taker side was liquidated.    |
 | `"MT"` | Both sides were liquidated.   |
@@ -527,71 +524,27 @@ Deribit because this continuous model does not map to a discrete period.
 
 ## Deribit specific data
 
-### Book summaries
-
-Request `DeribitBookSummary` custom data to fetch one bulk snapshot filtered by currency and product
-kind. Each response item includes the Nautilus instrument ID, implied volatility, open interest,
-prices, volume, and other fields returned by `public/get_book_summary_by_currency`.
-
-The actor or strategy receives the complete response through one `on_historical_data` callback.
-Each item is a `CustomData` wrapper containing a `DeribitBookSummary` in its `data` field:
-
-```python
-from nautilus_trader.adapters.deribit import DERIBIT_CLIENT_ID
-from nautilus_trader.adapters.deribit import DeribitBookSummary
-from nautilus_trader.model import CustomData
-from nautilus_trader.model import DataType
-
-
-def on_start(self) -> None:
-    self.request_data(
-        DataType(
-            DeribitBookSummary.__name__,
-            metadata={"currency": "BTC", "kind": "option"},
-        ),
-        DERIBIT_CLIENT_ID,
-    )
-
-
-def on_historical_data(self, data: list[CustomData]) -> None:
-    for item in data:
-        summary = item.data
-        if isinstance(summary, DeribitBookSummary):
-            self.log.info(
-                f"{summary.instrument_id}: mark_iv={summary.mark_iv}, "
-                f"open_interest={summary.open_interest}",
-            )
-```
-
-The `currency` metadata field is required. The optional `kind` field defaults to `option`.
-Decimal‑backed venue fields, such as `mark_iv` and `open_interest`, are exposed to Python as strings
-or `None`. An empty response invokes `on_historical_data` once with an empty list. A failed venue
-request also invokes the callback with an empty list after logging an error. A request rejected
-before it reaches the venue, such as one missing `currency`, produces no callback.
-
-### Volatility index
-
 The adapter emits `DeribitVolatilityIndex` custom data from Deribit's
 `deribit_volatility_index.{index_name}` WebSocket channel. Deribit provides
 volatility index streams such as `btc_usd` and `eth_usd`.
 
 | Field        | Type    | Description                                              |
-| ------------ | ------- | -------------------------------------------------------- |
+|--------------|---------|----------------------------------------------------------|
 | `index_name` | `str`   | Deribit volatility index name, for example `btc_usd`.    |
 | `volatility` | `float` | Current volatility index value.                          |
 | `ts_event`   | `int`   | UNIX timestamp in nanoseconds when the update occurred.  |
 | `ts_init`    | `int`   | UNIX timestamp in nanoseconds when the object was built. |
 
-Subscribe from an actor or strategy with `DataType(DeribitVolatilityIndex.__name__)`.
+Subscribe from an actor or strategy with `DataType(DeribitVolatilityIndex)`.
 The `index_name` metadata key is required:
 
 ```python
 from nautilus_trader.adapters.deribit import DeribitVolatilityIndex
 from nautilus_trader.model import ClientId
-from nautilus_trader.model import DataType
+from nautilus_trader.model.data import DataType
 
 self.subscribe_data(
-    data_type=DataType(DeribitVolatilityIndex.__name__, metadata={"index_name": "btc_usd"}),
+    data_type=DataType(DeribitVolatilityIndex, metadata={"index_name": "btc_usd"}),
     client_id=ClientId.from_str("DERIBIT"),
 )
 ```
@@ -605,18 +558,18 @@ server-side checks.
 
 ### HTTP limits
 
-| Bucket / key      | Adapter bucket        | Notes                                              |
-| ----------------- | --------------------- | -------------------------------------------------- |
-| `deribit:global`  | 20 req/sec, 100 burst | Default bucket for non‑matching HTTP requests.     |
-| `deribit:orders`  | 5 req/sec, 20 burst   | Matching‑engine HTTP bucket for low‑level clients. |
-| `deribit:account` | 5 req/sec, no burst   | Account information endpoints.                     |
+| Bucket / key       | Adapter bucket          | Notes                                              |
+|--------------------|-------------------------|----------------------------------------------------|
+| `deribit:global`   | 20 req/sec, 100 burst   | Default bucket for non‑matching HTTP requests.     |
+| `deribit:orders`   | 5 req/sec, 20 burst     | Matching‑engine HTTP bucket for low‑level clients. |
+| `deribit:account`  | 5 req/sec, no burst     | Account information endpoints.                     |
 
 ### WebSocket limits
 
-| Operation             | Adapter bucket      | Notes                                      |
-| --------------------- | ------------------- | ------------------------------------------ |
-| Subscribe/unsubscribe | 3 req/sec, 10 burst | Subscription operations.                   |
-| Order operations      | 5 req/sec, 20 burst | Buy, sell, edit, and cancel via WebSocket. |
+| Operation             | Adapter bucket        | Notes                                      |
+|-----------------------|-----------------------|--------------------------------------------|
+| Subscribe/unsubscribe | 3 req/sec, 10 burst   | Subscription operations.                   |
+| Order operations      | 5 req/sec, 20 burst   | Buy, sell, edit, and cancel via WebSocket. |
 
 :::note
 The Nautilus adapter uses WebSocket for order submission (not HTTP) for lower latency.
@@ -631,7 +584,7 @@ the default non-matching-engine pool as follows:
 **Non-matching engine requests:**
 
 | Parameter        | Value              | Notes                           |
-| ---------------- | ------------------ | ------------------------------- |
+|------------------|--------------------|---------------------------------|
 | Cost per request | 500 credits        | Each API call consumes credits. |
 | Maximum pool     | 50,000 credits     | Allows 100 request burst.       |
 | Refill rate      | 10,000 credits/sec | ~20 sustained requests/second.  |
@@ -639,7 +592,7 @@ the default non-matching-engine pool as follows:
 **Matching engine requests (default tier):**
 
 | Parameter      | Value          | Notes                            |
-| -------------- | -------------- | -------------------------------- |
+|----------------|----------------|----------------------------------|
 | Sustained rate | 5 requests/sec | Continuous rate limit.           |
 | Burst capacity | 20 requests    | Maximum burst before throttling. |
 
@@ -672,7 +625,7 @@ Repeated violations may result in temporary throttling.
 ### Platform limits
 
 | Limit                                   | Current Deribit guidance |
-| --------------------------------------- | ------------------------ |
+|-----------------------------------------|--------------------------|
 | Active sessions per API key or login    | 16                       |
 | Web app connections per browser session | 2                        |
 
@@ -682,7 +635,7 @@ The adapter uses **separate WebSocket sessions** for data and execution clients,
 authentication scope:
 
 | Client           | Session Name         | Purpose                                             |
-| ---------------- | -------------------- | --------------------------------------------------- |
+|------------------|----------------------|-----------------------------------------------------|
 | Data client      | `nautilus-data`      | Market data subscriptions (raw feeds require auth). |
 | Execution client | `nautilus-execution` | Order operations (buy, sell, edit, cancel).         |
 
@@ -750,7 +703,7 @@ Configure appropriate permissions when
 [creating your API key](https://support.deribit.com/hc/en-us/articles/26268257333661):
 
 | Scope              | Required For                           |
-| ------------------ | -------------------------------------- |
+|--------------------|----------------------------------------|
 | `account:read`     | Account information, portfolio data.   |
 | `trade:read`       | View orders and positions.             |
 | `trade:read_write` | Place, modify, and cancel orders.      |
@@ -809,7 +762,7 @@ for the testnet through the testnet interface at [test.deribit.com](https://test
 ### Data client configuration options
 
 | Option                             | Default    | Description                                                        |
-| ---------------------------------- | ---------- | ------------------------------------------------------------------ |
+|------------------------------------|------------|--------------------------------------------------------------------|
 | `api_key`                          | `None`     | Deribit API key. Loads from environment variables when omitted.    |
 | `api_secret`                       | `None`     | Deribit API secret. Loads from environment variables when omitted. |
 | `product_types`                    | `[FUTURE]` | Product types to load.                                             |
@@ -840,7 +793,7 @@ HTTP failures are logged and the WebSocket subscribe is skipped.
 ### Execution client configuration options
 
 | Option                   | Default    | Description                                                        |
-| ------------------------ | ---------- | ------------------------------------------------------------------ |
+|--------------------------|------------|--------------------------------------------------------------------|
 | `trader_id`              | Required   | Nautilus trader ID for generated reports and events.               |
 | `account_id`             | Required   | Nautilus account ID for generated reports and events.              |
 | `api_key`                | `None`     | Deribit API key. Loads from environment variables when omitted.    |
@@ -958,7 +911,7 @@ config = DeribitDataClientConfig(
 It's possible to override the default base URLs for both HTTP and WebSocket APIs:
 
 | Environment | HTTP URL                   | WebSocket URL                      |
-| ----------- | -------------------------- | ---------------------------------- |
+|-------------|----------------------------|------------------------------------|
 | Production  | `https://www.deribit.com`  | `wss://www.deribit.com/ws/api/v2`  |
 | Testnet     | `https://test.deribit.com` | `wss://test.deribit.com/ws/api/v2` |
 

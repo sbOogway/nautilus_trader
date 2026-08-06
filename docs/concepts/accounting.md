@@ -14,11 +14,11 @@ configuration (starting balances, margin-model selection per venue), see
 When you attach a venue to the engine for either live trading or a backtest, you
 pick one of three accounting modes via `account_type`:
 
-| Account type | Typical use case                                | What the engine locks                                                     |
-| ------------ | ----------------------------------------------- | ------------------------------------------------------------------------- |
-| Cash         | Spot trading (e.g., BTC/USDT, stocks)           | Notional value for every position a pending order would open.             |
-| Margin       | Derivatives or any product that allows leverage | Initial margin for each order plus maintenance margin for open positions. |
-| Betting      | Sports betting, bookmaking                      | Stake required by the venue; no leverage.                                 |
+| Account type | Typical use case                                 | What the engine locks                                                     |
+| ------------ | ------------------------------------------------ | ------------------------------------------------------------------------- |
+| Cash         | Spot trading (e.g., BTC/USDT, stocks)            | Notional value for every position a pending order would open.             |
+| Margin       | Derivatives or any product that allows leverage  | Initial margin for each order plus maintenance margin for open positions. |
+| Betting      | Sports betting, bookmaking                       | Stake required by the venue; no leverage.                                 |
 
 ### Cash accounts
 
@@ -85,7 +85,7 @@ Accounting values retain their source currency until an explicit conversion succ
 number from being labeled with the wrong currency or an unavailable value from being treated as zero.
 
 | Value                        | Currency contract                                              |
-| ---------------------------- | -------------------------------------------------------------- |
+|------------------------------|----------------------------------------------------------------|
 | Instrument cost currency     | Base for inverse, settlement for quanto, and quote otherwise.  |
 | Position PnL                 | Instrument cost currency captured when the position opens.     |
 | Calculated locks and margins | Each calculated amount's currency, converted independently.    |
@@ -264,7 +264,8 @@ Both built-in models compute margin as a percentage of notional using the
 instrument's `margin_init` and `margin_maint` fields. They differ only in
 whether leverage reduces the reservation. For venues with true per-contract
 fixed margin (CME / ICE), set `instrument.margin_init` and `margin_maint` so
-the percentage recovers the desired dollar amount.
+the percentage recovers the desired dollar amount, or implement a
+[custom model](#custom-models).
 
 ### HEDGING-mode netting
 
@@ -320,8 +321,21 @@ leverage affects margin requirements.
 
 ### Default behavior
 
-`MarginAccount` uses `LeveragedMarginModel` by default. Backtests select
-`StandardMarginModel` by passing it directly to `BacktestVenueConfig.margin_model`.
+`MarginAccount` uses `LeveragedMarginModel` by default. Override programmatically:
+
+```python
+from nautilus_trader.backtest.models import LeveragedMarginModel
+from nautilus_trader.backtest.models import StandardMarginModel
+from nautilus_trader.test_kit.stubs.execution import TestExecStubs
+
+account = TestExecStubs.margin_account()
+
+# Traditional broker behavior
+account.set_margin_model(StandardMarginModel())
+
+# Or the leveraged model (default)
+account.set_margin_model(LeveragedMarginModel())
+```
 
 ### Worked example: EUR/USD
 
@@ -340,11 +354,41 @@ leverage affects margin requirements.
 On a $10,000 account: the standard model blocks the trade; the leveraged model
 allows it.
 
-### Python model selection
+### Custom models
 
-Pass `StandardMarginModel()` or `LeveragedMarginModel()` directly to the backtest venue. The
-current Python binding does not accept custom margin model subclasses or a `MarginModelConfig`
-wrapper. See [Backtesting](backtesting/accounts-and-margin.md#margin-models).
+Subclass `MarginModel` and receive configuration through `MarginModelConfig`:
+
+```python
+from decimal import Decimal
+
+from nautilus_trader.backtest.config import MarginModelConfig
+from nautilus_trader.backtest.models import MarginModel
+from nautilus_trader.model.objects import Money
+
+
+class RiskAdjustedMarginModel(MarginModel):
+    def __init__(self, config: MarginModelConfig) -> None:
+        self.risk_multiplier = Decimal(str(config.config.get("risk_multiplier", 1.0)))
+        self.use_leverage = config.config.get("use_leverage", False)
+
+    def calculate_margin_init(self, instrument, quantity, price, leverage, use_quote_for_inverse=False):
+        notional = instrument.notional_value(quantity, price, use_quote_for_inverse)
+
+        if self.use_leverage:
+            adjusted = notional.as_decimal() / leverage
+        else:
+            adjusted = notional.as_decimal()
+
+        margin = adjusted * instrument.margin_init * self.risk_multiplier
+        return Money(margin, instrument.quote_currency)
+
+    def calculate_margin_maint(self, instrument, side, quantity, price, leverage, use_quote_for_inverse=False):
+        return self.calculate_margin_init(instrument, quantity, price, leverage, use_quote_for_inverse)
+```
+
+For backtest-wide configuration of the margin model via `BacktestVenueConfig`
+and `MarginModelConfig`, see the margin-models section of
+[Backtesting](backtesting/accounts-and-margin.md#margin-models).
 
 ## Adapter convention
 
@@ -376,8 +420,8 @@ are keyed by `currency`.
 
 ## Related guides
 
-- [Backtesting](backtesting/): starting balances, margin models, and backtest‑specific account
-  setup.
+- [Backtesting](backtesting/): starting balances, `MarginModelConfig`, and
+  backtest-specific account setup.
 - [Portfolio](portfolio.md): portfolio-level PnL, exposures, and currency
   conversion.
 - [Positions](positions.md): position lifecycle, aggregation, and PnL.

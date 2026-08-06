@@ -12,7 +12,7 @@ The principles, structures, and designs that underpin the platform.
 
 ## Actors
 
-The `DataActor` is the base component for interacting with the trading system.
+The `Actor` is the base component for interacting with the trading system.
 Covers capabilities and implementation details.
 
 ## Strategies
@@ -27,13 +27,13 @@ Instrument definitions for tradable assets and contracts.
 
 User-defined instruments whose prices are computed by evaluating a numeric expression over component instrument prices.
 
-## Continuous futures
+## Continuous Futures
 
 Splicing consecutive futures contracts into one adjusted bar series via an explicit roll
 table, including the four adjustment modes, request and subscription flow, and the mid-bar
 roll boundary policy.
 
-## Value types
+## Value Types
 
 The immutable numeric types (`Price`, `Quantity`, `Money`) used throughout the platform,
 including their arithmetic behavior, precision handling, and type-specific constraints.
@@ -48,7 +48,7 @@ The event types that drive the system: order events, position events, account
 events, and time events. Covers handler dispatch, the causal chain from order
 fills to position events, and tracing orders to positions.
 
-## Event sourcing
+## Event Sourcing
 
 The durable event-store log for state-affecting messages, including capture boundaries,
 correlation headers, replay modes, recovery anchors, and verifier behavior.
@@ -64,19 +64,19 @@ Option Greeks (delta, gamma, vega, theta) from two paths: venue-provided real-ti
 Greeks via the Rust/PyO3 `OptionGreeks` type, and the local `GreeksCalculator` for
 Black-Scholes computation with shock scenarios, beta weighting, and portfolio aggregation.
 
-## Custom data
+## Custom Data
 
 How the custom data system works across Python and Rust: registration, persistence,
 Arrow encoding, and runtime routing through actors and strategies.
 
-## Order book
+## Order Book
 
 The high-performance order book, own order tracking, filtered views for net liquidity, and binary market support.
 
 ## Execution
 
 Trade execution and order management across multiple strategies and venues simultaneously (per instance),
-including command outcomes, the components involved, and the flow of execution messages.
+including the components involved and the flow of execution messages (commands and events).
 
 ## Orders
 
@@ -92,7 +92,7 @@ for netting OMS configurations.
 The `Cache` is the central in-memory store for all trading-related data.
 Covers capabilities and best practices.
 
-## Message bus
+## Message Bus
 
 The `MessageBus` enables decoupled messaging between components, supporting point-to-point,
 publish/subscribe, and request/response patterns.
@@ -131,15 +131,15 @@ customization options, and custom visualizations via the extensible chart regist
 How config structs work across Python and Rust: default resolution, the `T` vs `Option<T>`
 convention, builder patterns, and common fields shared across adapters and engines.
 
-## Live trading
+## Live Trading
 
 Deploying backtested strategies in real-time without code changes, and the key differences
 between backtesting and live trading.
 
-## Execution reconciliation
+## Plugins
 
-How live execution restores venue state at startup and detects order and position discrepancies
-while the node runs.
+The `nautilus-plugin` crate: plug-in artifact identity, the manifest contract, and the C-ABI
+boundary types for independently compiled Rust cdylibs.
 
 ## Adapters
 
@@ -150,7 +150,7 @@ Requirements and best practices for developing integration adapters for data pro
 Writing actors, strategies, and running backtests and live trading in pure Rust
 using the `crates/` implementation directly.
 
-## Deterministic simulation testing (DST)
+## Deterministic Simulation Testing (DST)
 
 The determinism contract for seed-replayable execution, the source-level seams that implement
 it, the pre-commit hook that enforces it, and the known scope boundaries.

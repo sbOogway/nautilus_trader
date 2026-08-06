@@ -30,7 +30,7 @@ mod examples;
 
 use pyo3::{prelude::*, pymodule};
 
-/// Exposed through `nautilus_trader.trading`.
+/// Loaded as `nautilus_pyo3.trading`.
 ///
 /// # Errors
 ///

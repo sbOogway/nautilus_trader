@@ -213,7 +213,7 @@ fn extract_hyperliquid_exec_config(
     }
 }
 
-/// Exposed through `nautilus_trader.adapters.hyperliquid`.
+/// Loaded as `nautilus_pyo3.hyperliquid`.
 #[pymodule]
 pub fn hyperliquid(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(stringify!(HYPERLIQUID), HYPERLIQUID)?;

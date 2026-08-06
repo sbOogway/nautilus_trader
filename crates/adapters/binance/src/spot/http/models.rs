@@ -27,11 +27,8 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::{
-    common::{
-        enums::{
-            BinanceOrderStatus, BinanceSelfTradePreventionMode, BinanceSide, BinanceTimeInForce,
-        },
-        parse::parse_micros_or_init,
+    common::enums::{
+        BinanceOrderStatus, BinanceSelfTradePreventionMode, BinanceSide, BinanceTimeInForce,
     },
     spot::sbe::spot::{
         order_side::OrderSide, order_status::OrderStatus, order_type::OrderType,
@@ -352,8 +349,7 @@ impl BinanceAccountInfo {
             balances.push(zero_balance);
         }
 
-        let ts_event =
-            parse_micros_or_init(self.update_time, "Spot SBE account update time", ts_init);
+        let ts_event = UnixNanos::from_micros(self.update_time as u64);
 
         AccountState::new(
             account_id,

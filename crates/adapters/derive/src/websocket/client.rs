@@ -73,8 +73,8 @@ use crate::{
     },
     http::{
         models::{
-            DeriveCancelByLabelResult, DeriveEmptyResult, DeriveOpenOrdersResult, DeriveOrder,
-            DeriveOrderResult, DeriveReplaceOutcome, DeriveReplaceResult,
+            DeriveEmptyResult, DeriveOpenOrdersResult, DeriveOrder, DeriveOrderResult,
+            DeriveReplaceResult,
         },
         query::{
             DeriveCancelAllParams, DeriveCancelByLabelParams, DeriveCancelParams,
@@ -346,7 +346,7 @@ impl DeriveWebSocketClient {
         // Rate limiting runs caller-side via `self.rate_limiter` before frames
         // are enqueued, so the network client's own limiter is left unconfigured
         // and never sleeps inside the single feed-handler task.
-        let client = WebSocketClient::connect(cfg, Some(message_handler), None, vec![], None)
+        let client = WebSocketClient::connect(cfg, Some(message_handler), None, None, vec![], None)
             .await
             .map_err(|e| DeriveWsError::transport(e.to_string()))?;
 
@@ -970,15 +970,16 @@ impl DeriveWsExecutionHandle {
         Ok(result.order)
     }
 
-    /// Modifies a working order by cancelling it and submitting a replacement
-    /// through the venue's `private/replace`.
+    /// Modifies a working order by atomically cancelling it and submitting a
+    /// replacement (the venue's `private/replace`). Returns the new order
+    /// echoed by the venue.
     ///
     /// # Errors
     ///
     /// Returns [`DeriveWsError::JsonRpc`] for venue rejections and
     /// [`DeriveWsError::Transport`] / [`DeriveWsError::Timeout`] when the
     /// outcome is ambiguous.
-    pub async fn modify_order(&self, params: &DeriveReplaceParams) -> Result<DeriveReplaceOutcome> {
+    pub async fn modify_order(&self, params: &DeriveReplaceParams) -> Result<DeriveOrder> {
         let reservation = self
             .reserve_matching_request(methods::PRIVATE_REPLACE)
             .await?;
@@ -990,7 +991,7 @@ impl DeriveWsExecutionHandle {
         &self,
         params: &DeriveReplaceParams,
         reservation: MatchingRateLimitReservation,
-    ) -> Result<DeriveReplaceOutcome> {
+    ) -> Result<DeriveOrder> {
         self.ensure_authenticated(methods::PRIVATE_REPLACE)?;
         debug_assert_eq!(reservation.method, methods::PRIVATE_REPLACE);
         let cmd_tx = self.cmd_tx.read().await.clone();
@@ -1002,11 +1003,7 @@ impl DeriveWsExecutionHandle {
             self.request_timeout,
         )
         .await?;
-        result
-            .into_outcome(&params.order_id_to_cancel, &params.order.label)
-            .map_err(|message| {
-                DeriveWsError::Serde(<serde_json::Error as serde::de::Error>::custom(message))
-            })
+        Ok(result.order)
     }
 
     /// Cancels a single order via `private/cancel`.
@@ -1062,21 +1059,19 @@ impl DeriveWsExecutionHandle {
     /// Returns [`DeriveWsError::JsonRpc`] for venue rejections and
     /// [`DeriveWsError::Transport`] / [`DeriveWsError::Timeout`] when the
     /// outcome is ambiguous.
-    pub async fn cancel_by_label(
-        &self,
-        params: &DeriveCancelByLabelParams,
-    ) -> Result<DeriveCancelByLabelResult> {
+    pub async fn cancel_by_label(&self, params: &DeriveCancelByLabelParams) -> Result<()> {
         self.require_authenticated(methods::PRIVATE_CANCEL_BY_LABEL)
             .await?;
         let cmd_tx = self.cmd_tx.read().await.clone();
-        send_request_typed(
+        let _: DeriveEmptyResult = send_request(
             &self.rate_limiter,
             &cmd_tx,
             methods::PRIVATE_CANCEL_BY_LABEL,
             params,
             self.request_timeout,
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     /// Returns currently untriggered trigger orders via

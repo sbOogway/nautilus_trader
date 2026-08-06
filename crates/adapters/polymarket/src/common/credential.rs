@@ -121,14 +121,12 @@ impl Display for EvmPrivateKey {
 /// L2 API credential with HMAC-SHA256 signing for authenticated requests.
 ///
 /// Stores the API key as `Ustr` (interned, used for lookups) and the
-/// decoded secret as `Box<[u8]>` (zeroized on drop). The base64 secret and
-/// HMAC key are initialized once to avoid repeated setup per request.
-/// `aws-lc-rs` cleanses the native HMAC context when the key is dropped.
+/// decoded secret as `Box<[u8]>` (zeroized on drop). The base64 secret
+/// is decoded once at construction to avoid repeated decoding per request.
 #[derive(Clone)]
 pub struct Credential {
     api_key: Ustr,
     secret_bytes: Box<[u8]>,
-    signing_key: hmac::Key,
     passphrase: String,
 }
 
@@ -140,12 +138,10 @@ impl Credential {
             .decode(api_secret)
             .map_err(|e| Error::auth(format!("Invalid base64 API secret: {e}")))?
             .into_boxed_slice();
-        let signing_key = hmac::Key::new(hmac::HMAC_SHA256, &secret_bytes);
 
         Ok(Self {
             api_key: Ustr::from(api_key),
             secret_bytes,
-            signing_key,
             passphrase,
         })
     }
@@ -170,12 +166,9 @@ impl Credential {
     ///
     /// Message format: `{timestamp}{method}{request_path}{body}`
     pub fn sign(&self, timestamp: &str, method: &str, request_path: &str, body: &str) -> String {
-        let mut context = hmac::Context::with_key(&self.signing_key);
-        context.update(timestamp.as_bytes());
-        context.update(method.as_bytes());
-        context.update(request_path.as_bytes());
-        context.update(body.as_bytes());
-        let tag = context.sign();
+        let message = format!("{timestamp}{method}{request_path}{body}");
+        let key = hmac::Key::new(hmac::HMAC_SHA256, &self.secret_bytes);
+        let tag = hmac::sign(&key, message.as_bytes());
         URL_SAFE.encode(tag.as_ref())
     }
 

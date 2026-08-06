@@ -26,7 +26,7 @@ use async_trait::async_trait;
 use nautilus_common::{
     cache::fifo::FifoCache,
     clients::ExecutionClient,
-    live::{runner::get_exec_event_sender, runtime::get_runtime, task::TaskHandles},
+    live::{runner::get_exec_event_sender, runtime::get_runtime},
     messages::execution::{
         BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
         GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
@@ -198,7 +198,7 @@ pub struct HyperliquidExecutionClient {
     emitter: ExecutionEventEmitter,
     http_client: HyperliquidHttpClient,
     ws_client: HyperliquidWebSocketClient,
-    pending_tasks: TaskHandles,
+    pending_tasks: Mutex<Vec<JoinHandle<()>>>,
     ws_stream_handle: Option<JoinHandle<()>>,
     settlement_poll_handle: Option<JoinHandle<()>>,
     ws_dispatch_state: Arc<WsDispatchState>,
@@ -236,7 +236,8 @@ impl HyperliquidExecutionClient {
     )]
     #[must_use]
     pub fn pending_tasks_all_finished(&self) -> bool {
-        self.pending_tasks.all_finished()
+        let tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
+        tasks.iter().all(|h| h.is_finished())
     }
 
     fn resolve_slippage_bps(&self, params: Option<&Params>) -> u32 {
@@ -470,7 +471,7 @@ impl HyperliquidExecutionClient {
             emitter,
             http_client,
             ws_client,
-            pending_tasks: TaskHandles::default(),
+            pending_tasks: Mutex::new(Vec::new()),
             ws_stream_handle: None,
             settlement_poll_handle: None,
             ws_dispatch_state: Arc::new(WsDispatchState::new()),
@@ -606,7 +607,9 @@ impl HyperliquidExecutionClient {
             }
         });
 
-        self.pending_tasks.push(handle);
+        let mut tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
+        tasks.retain(|handle| !handle.is_finished());
+        tasks.push(handle);
     }
 
     fn start_outcome_settlement_poll(&mut self) -> anyhow::Result<()> {
@@ -689,7 +692,10 @@ impl HyperliquidExecutionClient {
     }
 
     fn abort_pending_tasks(&self) {
-        self.pending_tasks.abort_all();
+        let mut tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
+        for handle in tasks.drain(..) {
+            handle.abort();
+        }
     }
 }
 

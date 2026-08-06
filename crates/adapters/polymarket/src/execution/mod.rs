@@ -37,7 +37,6 @@ use anyhow::Context;
 use async_trait::async_trait;
 use nautilus_common::{
     clients::ExecutionClient,
-    live::task::TaskHandles,
     messages::execution::{
         BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
         GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
@@ -96,7 +95,7 @@ pub struct PolymarketExecutionClient {
     submitter: OrderSubmitter,
     ws_client: PolymarketWebSocketClient,
     secrets: Secrets,
-    pending_tasks: Arc<TaskHandles>,
+    pending_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     stopping: Arc<AtomicBool>,
     ws_stream_handle: Option<JoinHandle<()>>,
     heartbeat_task: Option<HeartbeatTask>,
@@ -204,7 +203,7 @@ impl PolymarketExecutionClient {
             submitter,
             ws_client,
             secrets,
-            pending_tasks: Arc::new(TaskHandles::default()),
+            pending_tasks: Arc::new(Mutex::new(Vec::new())),
             stopping: Arc::new(AtomicBool::new(false)),
             ws_stream_handle: None,
             heartbeat_task: None,

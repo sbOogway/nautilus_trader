@@ -81,9 +81,11 @@ pub fn parse_trade_tick(
     let size = Quantity::from_decimal_dp(trade.size, size_precision)
         .context(format!("failed to parse size for trade {}", trade.id))?;
 
-    let ts_event_nanos = u64::try_from(trade.created_at.as_nanosecond())
-        .map_err(|_| anyhow::anyhow!("Timestamp out of range for trade {}", trade.id))?;
-    let ts_event = UnixNanos::from(ts_event_nanos);
+    let ts_event_nanos = trade
+        .created_at
+        .timestamp_nanos_opt()
+        .ok_or_else(|| anyhow::anyhow!("Timestamp out of range for trade {}", trade.id))?;
+    let ts_event = UnixNanos::from(ts_event_nanos as u64);
 
     Ok(TradeTick::new(
         instrument_id,
@@ -112,13 +114,17 @@ pub fn parse_bar(
     timestamp_on_close: bool,
     ts_init: UnixNanos,
 ) -> anyhow::Result<Bar> {
-    let started_at_nanos = u64::try_from(candle.started_at.as_nanosecond()).map_err(|_| {
+    let started_at_nanos = candle.started_at.timestamp_nanos_opt().ok_or_else(|| {
         anyhow::anyhow!("Timestamp out of range for candle at {}", candle.started_at)
     })?;
-    let mut ts_event = UnixNanos::from(started_at_nanos);
+    let mut ts_event = UnixNanos::from(started_at_nanos as u64);
 
     if timestamp_on_close {
-        let interval_ns = bar_type.spec().timedelta().as_nanos();
+        let interval_ns = bar_type
+            .spec()
+            .timedelta()
+            .num_nanoseconds()
+            .context("bar specification produced non-integer interval")?;
         let interval_ns =
             u64::try_from(interval_ns).context("bar interval overflowed u64 nanoseconds")?;
         let updated = ts_event
@@ -369,7 +375,7 @@ pub fn parse_instrument_any(
     );
 
     // Create the perpetual instrument
-    let instrument = CryptoPerpetual::new_checked(
+    let instrument = CryptoPerpetual::new(
         instrument_id,
         raw_symbol,
         base_currency,
@@ -396,7 +402,7 @@ pub fn parse_instrument_any(
         None, // info: Option<Params>
         ts_init,
         ts_init,
-    )?;
+    );
 
     Ok(InstrumentAny::CryptoPerpetual(instrument))
 }
@@ -461,8 +467,7 @@ pub(super) mod display_fromstr_opt {
 mod tests {
     use std::str::FromStr;
 
-    use jiff::Timestamp;
-    use nautilus_core::correctness::CorrectnessError;
+    use chrono::Utc;
     use nautilus_model::{
         data::BarType,
         enums::{AggressorSide, OrderSide},
@@ -499,7 +504,7 @@ mod tests {
             oracle_price: Some(Decimal::from_str("50000").unwrap()),
             price_change_24h: Decimal::ZERO,
             next_funding_rate: Decimal::ZERO,
-            next_funding_at: Some(Timestamp::now()),
+            next_funding_at: Some(Utc::now()),
             min_order_size: Some(Decimal::from_str("0.001").unwrap()),
             market_type: Some(DydxTickerType::Perpetual),
             initial_margin_fraction: Decimal::from_str("0.05").unwrap(),
@@ -564,24 +569,6 @@ mod tests {
                 || error_msg.contains("Failed to parse ticker"),
             "Expected ticker format error, was: {error_msg}"
         );
-    }
-
-    #[rstest]
-    fn test_parse_instrument_any_checked() {
-        let mut market = create_test_market();
-        market.tick_size = Decimal::ZERO;
-
-        let result = parse_instrument_any(&market, None, None, UnixNanos::default());
-
-        assert!(result.is_err());
-
-        let correctness_error = result.err().unwrap();
-
-        let not_positive = correctness_error
-            .downcast_ref::<CorrectnessError>()
-            .unwrap();
-
-        assert!(matches!(not_positive, CorrectnessError::NotPositive { .. }));
     }
 
     #[rstest]
@@ -1202,7 +1189,7 @@ pub fn parse_order_status_report(
 
     // Use updated_at for both ts_accepted and ts_last (not good_til_block_time which is the expiry)
     let ts_accepted = order.updated_at.map_or(ts_init, |dt| {
-        UnixNanos::from(dt.as_millisecond() as u64 * 1_000_000)
+        UnixNanos::from(dt.timestamp_millis() as u64 * 1_000_000)
     });
     let ts_last = ts_accepted;
 
@@ -1239,7 +1226,7 @@ pub fn parse_order_status_report(
     }
 
     if let Some(good_til_block_time) = order.good_til_block_time {
-        let expire_ns = good_til_block_time.as_millisecond() as u64 * 1_000_000;
+        let expire_ns = good_til_block_time.timestamp_millis() as u64 * 1_000_000;
         report = report.with_expire_time(UnixNanos::from(expire_ns));
 
         // dYdX reports a long-term order that has crossed `good_til_block_time`
@@ -1333,7 +1320,7 @@ pub fn parse_fill_report(
         DydxLiquidity::Taker => LiquiditySide::Taker,
     };
 
-    let ts_event = UnixNanos::from(fill.created_at.as_millisecond() as u64 * 1_000_000);
+    let ts_event = UnixNanos::from(fill.created_at.timestamp_millis() as u64 * 1_000_000);
 
     let report = FillReport::new(
         account_id,
@@ -1383,7 +1370,7 @@ pub fn parse_position_status_report(
         .context("failed to parse position size")?;
 
     let avg_px_open = position.entry_price;
-    let ts_last = UnixNanos::from(position.created_at.as_millisecond() as u64 * 1_000_000);
+    let ts_last = UnixNanos::from(position.created_at.timestamp_millis() as u64 * 1_000_000);
 
     Ok(PositionStatusReport::new(
         account_id,
@@ -1689,7 +1676,7 @@ pub fn parse_account_state_from_http(
 
 #[cfg(test)]
 mod reconciliation_tests {
-    use jiff::Timestamp;
+    use chrono::Utc;
     use nautilus_model::{
         enums::{OrderSide, OrderStatus, TimeInForce},
         identifiers::{AccountId, InstrumentId, Symbol},
@@ -1783,14 +1770,14 @@ mod reconciliation_tests {
             post_only: false,
             order_flags: 0,
             good_til_block: None,
-            good_til_block_time: Some(Timestamp::now()),
+            good_til_block_time: Some(Utc::now()),
             created_at_height: Some(1000),
             client_metadata: 0,
             trigger_price: None,
             condition_type: None,
             conditional_order_trigger_subticks: None,
             execution: None,
-            updated_at: Some(Timestamp::now()),
+            updated_at: Some(Utc::now()),
             updated_at_height: Some(1001),
             ticker: None,
             subaccount_number: 0,
@@ -1833,14 +1820,14 @@ mod reconciliation_tests {
             post_only: false,
             order_flags: 0,
             good_til_block: None,
-            good_til_block_time: Some(Timestamp::now()),
+            good_til_block_time: Some(Utc::now()),
             created_at_height: Some(1000),
             client_metadata: 0,
             trigger_price: Some(dec!(49000.0)),
             condition_type: Some(DydxConditionType::StopLoss),
             conditional_order_trigger_subticks: Some(490000),
             execution: None,
-            updated_at: Some(Timestamp::now()),
+            updated_at: Some(Utc::now()),
             updated_at_height: Some(1001),
             ticker: None,
             subaccount_number: 0,
@@ -1861,15 +1848,15 @@ mod reconciliation_tests {
     /// reconciliation surfaces `OrderExpired`, matching the WS dispatch path.
     #[rstest]
     fn test_parse_order_status_report_canceled_after_expiry_becomes_expired() {
-        use jiff::SignedDuration;
+        use chrono::Duration;
 
         let instrument = create_test_instrument();
         let account_id = AccountId::new("DYDX-001");
-        let now = Timestamp::now();
-        let ts_init = UnixNanos::from(now.as_millisecond() as u64 * 1_000_000);
+        let now = Utc::now();
+        let ts_init = UnixNanos::from(now.timestamp_millis() as u64 * 1_000_000);
 
         // good_til_block_time is one hour in the past; updated_at after it.
-        let expired_at = now - SignedDuration::from_hours(1);
+        let expired_at = now - Duration::hours(1);
 
         let order = Order {
             id: "order-expired".to_string(),
@@ -1910,13 +1897,13 @@ mod reconciliation_tests {
     /// must remain `Canceled` (user/system cancel, not expiry).
     #[rstest]
     fn test_parse_order_status_report_canceled_before_expiry_stays_canceled() {
-        use jiff::SignedDuration;
+        use chrono::Duration;
 
         let instrument = create_test_instrument();
         let account_id = AccountId::new("DYDX-001");
-        let now = Timestamp::now();
-        let ts_init = UnixNanos::from(now.as_millisecond() as u64 * 1_000_000);
-        let future_expiry = now + SignedDuration::from_hours(1);
+        let now = Utc::now();
+        let ts_init = UnixNanos::from(now.timestamp_millis() as u64 * 1_000_000);
+        let future_expiry = now + Duration::hours(1);
 
         let order = Order {
             id: "order-cancel".to_string(),
@@ -1991,14 +1978,14 @@ mod reconciliation_tests {
             post_only: false,
             order_flags: 0,
             good_til_block: None,
-            good_til_block_time: Some(Timestamp::now()),
+            good_til_block_time: Some(Utc::now()),
             created_at_height: Some(1000),
             client_metadata: 0,
             trigger_price: Some(trigger),
             condition_type: None,
             conditional_order_trigger_subticks: Some(490_000),
             execution: None,
-            updated_at: Some(Timestamp::now()),
+            updated_at: Some(Utc::now()),
             updated_at_height: Some(1001),
             ticker: None,
             subaccount_number: 0,
@@ -2038,14 +2025,14 @@ mod reconciliation_tests {
             post_only: false,
             order_flags: 0,
             good_til_block: None,
-            good_til_block_time: Some(Timestamp::now()),
+            good_til_block_time: Some(Utc::now()),
             created_at_height: Some(1000),
             client_metadata: 0,
             trigger_price: Some(dec!(49000.0)),
             condition_type: None,
             conditional_order_trigger_subticks: Some(490_000),
             execution: None,
-            updated_at: Some(Timestamp::now()),
+            updated_at: Some(Utc::now()),
             updated_at_height: Some(1001),
             ticker: None,
             subaccount_number: 0,
@@ -2063,8 +2050,8 @@ mod reconciliation_tests {
     fn test_parse_order_status_report_canceled_at_expiry_boundary_becomes_expired() {
         let instrument = create_test_instrument();
         let account_id = AccountId::new("DYDX-001");
-        let expire_at = Timestamp::now();
-        let ts_init = UnixNanos::from(expire_at.as_millisecond() as u64 * 1_000_000);
+        let expire_at = Utc::now();
+        let ts_init = UnixNanos::from(expire_at.timestamp_millis() as u64 * 1_000_000);
 
         let order = Order {
             id: "order-expired-boundary".to_string(),
@@ -2116,7 +2103,7 @@ mod reconciliation_tests {
             price: dec!(50100.0),
             size: dec!(1.0),
             fee: dec!(-5.01),
-            created_at: Timestamp::now(),
+            created_at: Utc::now(),
             created_at_height: 1000,
             order_id: "order123".to_string(),
             client_metadata: 0,
@@ -2149,7 +2136,7 @@ mod reconciliation_tests {
             exit_price: None,
             realized_pnl: dec!(100.0),
             created_at_height: 1000,
-            created_at: Timestamp::now(),
+            created_at: Utc::now(),
             sum_open: dec!(2.5),
             sum_close: dec!(0.0),
             net_funding: dec!(-2.5),
@@ -2183,7 +2170,7 @@ mod reconciliation_tests {
             exit_price: None,
             realized_pnl: dec!(0.0),
             created_at_height: 1000,
-            created_at: Timestamp::now(),
+            created_at: Utc::now(),
             sum_open: dec!(1.5),
             sum_close: dec!(0.0),
             net_funding: dec!(1.2),
@@ -2215,12 +2202,12 @@ mod reconciliation_tests {
             exit_price: Some(dec!(51000.0)),
             realized_pnl: dec!(500.0),
             created_at_height: 1000,
-            created_at: Timestamp::now(),
+            created_at: Utc::now(),
             sum_open: dec!(2.0),
             sum_close: dec!(2.0),
             net_funding: dec!(-5.0),
             unrealized_pnl: dec!(0.0),
-            closed_at: Some(Timestamp::now()),
+            closed_at: Some(Utc::now()),
         };
 
         let result = parse_position_status_report(&position, &instrument, account_id, ts_init);
@@ -2262,7 +2249,7 @@ mod reconciliation_tests {
             condition_type: None,
             conditional_order_trigger_subticks: None,
             execution: None,
-            updated_at: Some(Timestamp::now()),
+            updated_at: Some(Utc::now()),
             updated_at_height: Some(900),
             ticker: None,
             subaccount_number: 0,
@@ -2309,7 +2296,7 @@ mod reconciliation_tests {
             condition_type: None,
             conditional_order_trigger_subticks: None,
             execution: None,
-            updated_at: Some(Timestamp::now()),
+            updated_at: Some(Utc::now()),
             updated_at_height: Some(1600),
             ticker: None,
             subaccount_number: 0,
@@ -2343,7 +2330,7 @@ mod reconciliation_tests {
             exit_price: None,
             realized_pnl: dec!(0.0),
             created_at_height: 1000,
-            created_at: Timestamp::now(),
+            created_at: Utc::now(),
             sum_open: dec!(1.5),
             sum_close: dec!(0.0),
             net_funding: dec!(-1.0),
@@ -2368,7 +2355,7 @@ mod reconciliation_tests {
             exit_price: None,
             realized_pnl: dec!(0.0),
             created_at_height: 1100,
-            created_at: Timestamp::now(),
+            created_at: Utc::now(),
             sum_open: dec!(2.0),
             sum_close: dec!(0.0),
             net_funding: dec!(0.5),
@@ -2400,7 +2387,7 @@ mod reconciliation_tests {
             price: dec!(50000.0),
             size: dec!(0.1),
             fee: dec!(0.0), // Zero fee (e.g., fee rebate or promotional period)
-            created_at: Timestamp::now(),
+            created_at: Utc::now(),
             created_at_height: 1000,
             order_id: "order-zero-fee".to_string(),
             client_metadata: 0,
@@ -2430,7 +2417,7 @@ mod reconciliation_tests {
             price: dec!(50000.0),
             size: dec!(1.0),
             fee: dec!(-2.5), // Negative fee = rebate
-            created_at: Timestamp::now(),
+            created_at: Utc::now(),
             created_at_height: 1000,
             order_id: "order-maker-rebate".to_string(),
             client_metadata: 0,

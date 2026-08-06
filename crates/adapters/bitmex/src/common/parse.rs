@@ -17,7 +17,7 @@
 
 use std::{borrow::Cow, str::FromStr};
 
-use jiff::Timestamp;
+use chrono::{DateTime, Utc};
 use nautilus_core::{Params, nanos::UnixNanos, uuid::UUID4};
 use nautilus_model::{
     data::bar::BarType,
@@ -291,13 +291,16 @@ pub fn normalize_trade_bin_volume(volume: Option<i64>, symbol: &Ustr) -> u64 {
 ///
 /// Returns epoch (0) for invalid timestamps that cannot be converted to nanoseconds.
 #[must_use]
-pub fn parse_optional_datetime_to_unix_nanos(value: &Option<Timestamp>, field: &str) -> UnixNanos {
+pub fn parse_optional_datetime_to_unix_nanos(
+    value: &Option<DateTime<Utc>>,
+    field: &str,
+) -> UnixNanos {
     value
         .map(|dt| {
-            UnixNanos::from(u64::try_from(dt.as_nanosecond()).unwrap_or_else(|_| {
+            UnixNanos::from(dt.timestamp_nanos_opt().unwrap_or_else(|| {
                 log::error!("Invalid timestamp - out of range: field={field}, timestamp={dt:?}");
                 0
-            }))
+            }) as u64)
         })
         .unwrap_or_default()
 }
@@ -478,7 +481,7 @@ pub fn parse_account_state(
     let is_reported = true;
     let event_id = UUID4::new();
     let ts_event =
-        UnixNanos::from(u64::try_from(margin.timestamp.as_nanosecond()).unwrap_or_default());
+        UnixNanos::from(margin.timestamp.timestamp_nanos_opt().unwrap_or_default() as u64);
 
     Ok(AccountState::new(
         account_id,
@@ -527,7 +530,7 @@ pub fn parse_peg_offset_value(params: Option<&Params>) -> anyhow::Result<Option<
 /// Derives a deterministic [`TradeId`] for BitMEX trades that arrive without a
 /// `trdMatchID` (e.g. certain historical or bucketed rows).
 ///
-/// The hash combines the symbol, timestamp, price, size, and side so replayed
+/// The hash combines the symbol, timestamp, price, size and side so replayed
 /// data yields the same identifier across runs. FNV-1a is stable across
 /// architectures and crate versions; the 0x1f delimiter keeps variable-length
 /// fields from colliding.
@@ -568,22 +571,12 @@ pub fn derive_trade_id(
 
 #[cfg(test)]
 mod tests {
-    use jiff::{Timestamp, civil::Date, tz::Offset};
+    use chrono::TimeZone;
     use nautilus_model::{instruments::CurrencyPair, types::fixed::FIXED_PRECISION};
     use rstest::rstest;
     use ustr::Ustr;
 
     use super::*;
-
-    fn utc_timestamp(year: i16, month: i8, day: i8, hour: i8, minute: i8, second: i8) -> Timestamp {
-        Offset::UTC
-            .to_timestamp(
-                Date::new(year, month, day)
-                    .unwrap()
-                    .at(hour, minute, second, 0),
-            )
-            .unwrap()
-    }
 
     #[rstest]
     fn test_clean_reason_strips_nautilus_trader() {
@@ -773,7 +766,7 @@ mod tests {
             withdrawable_margin: Some(4900000),
             maker_fee_discount: Some(0.1),
             taker_fee_discount: Some(0.05),
-            timestamp: utc_timestamp(2024, 1, 1, 12, 0, 0),
+            timestamp: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 12, 0, 0).unwrap(),
             foreign_margin_balance: None,
             foreign_requirement: None,
         };
@@ -828,7 +821,7 @@ mod tests {
             withdrawable_margin: None,
             maker_fee_discount: None,
             taker_fee_discount: None,
-            timestamp: utc_timestamp(2024, 1, 1, 12, 0, 0),
+            timestamp: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 12, 0, 0).unwrap(),
             foreign_margin_balance: None,
             foreign_requirement: None,
         };
@@ -878,7 +871,7 @@ mod tests {
             withdrawable_margin: None,
             maker_fee_discount: None,
             taker_fee_discount: None,
-            timestamp: utc_timestamp(2024, 1, 1, 12, 0, 0),
+            timestamp: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 12, 0, 0).unwrap(),
             foreign_margin_balance: None,
             foreign_requirement: None,
         };
@@ -933,7 +926,7 @@ mod tests {
             withdrawable_margin: Some(4_900_000),
             maker_fee_discount: None,
             taker_fee_discount: None,
-            timestamp: utc_timestamp(2024, 1, 1, 12, 0, 0),
+            timestamp: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 12, 0, 0).unwrap(),
             foreign_margin_balance: None,
             foreign_requirement: None,
         };
@@ -978,7 +971,7 @@ mod tests {
             withdrawable_margin: None,
             maker_fee_discount: None,
             taker_fee_discount: None,
-            timestamp: jiff::Timestamp::now(),
+            timestamp: chrono::Utc::now(),
             foreign_margin_balance: None,
             foreign_requirement: None,
         };
@@ -1023,7 +1016,7 @@ mod tests {
             withdrawable_margin: None,
             maker_fee_discount: None,
             taker_fee_discount: None,
-            timestamp: jiff::Timestamp::now(),
+            timestamp: chrono::Utc::now(),
             foreign_margin_balance: None,
             foreign_requirement: None,
         };
@@ -1074,7 +1067,7 @@ mod tests {
             withdrawable_margin: None,
             maker_fee_discount: None,
             taker_fee_discount: None,
-            timestamp: jiff::Timestamp::now(),
+            timestamp: chrono::Utc::now(),
             foreign_margin_balance: None,
             foreign_requirement: None,
         };
@@ -1125,7 +1118,7 @@ mod tests {
             withdrawable_margin: None,
             maker_fee_discount: None,
             taker_fee_discount: None,
-            timestamp: jiff::Timestamp::now(),
+            timestamp: chrono::Utc::now(),
             foreign_margin_balance: Some(100000000), // Foreign margin balance in satoshis
             foreign_requirement: Some(5000000),      // 0.05 BTC required for USDT positions
         };
@@ -1176,7 +1169,7 @@ mod tests {
             withdrawable_margin: None,
             maker_fee_discount: None,
             taker_fee_discount: None,
-            timestamp: jiff::Timestamp::now(),
+            timestamp: chrono::Utc::now(),
             foreign_margin_balance: Some(100000000),
             foreign_requirement: Some(5000000), // 0.05 BTC for USDT positions
         };

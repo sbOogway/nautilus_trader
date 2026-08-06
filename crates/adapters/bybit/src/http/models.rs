@@ -24,9 +24,9 @@ use crate::common::{
         BybitAccountType, BybitApiKeyType, BybitCancelType, BybitContractType, BybitCreateType,
         BybitExecType, BybitInnovationFlag, BybitInstrumentStatus, BybitMarginMode,
         BybitMarginTrading, BybitOptionType, BybitOrderSide, BybitOrderStatus, BybitOrderType,
-        BybitPositionIdx, BybitPositionSide, BybitPositionStatus, BybitProductType,
-        BybitRepayStatus, BybitSmpType, BybitStopOrderType, BybitSymbolType, BybitTimeInForce,
-        BybitTpSlMode, BybitTriggerDirection, BybitTriggerType, BybitUnifiedMarginStatus,
+        BybitPositionIdx, BybitPositionSide, BybitPositionStatus, BybitProductType, BybitSmpType,
+        BybitStopOrderType, BybitSymbolType, BybitTimeInForce, BybitTpSlMode,
+        BybitTriggerDirection, BybitTriggerType, BybitUnifiedMarginStatus,
     },
     models::{
         BybitCursorList, BybitCursorListResponse, BybitListResponse, BybitResponse, LeverageFilter,
@@ -34,8 +34,8 @@ use crate::common::{
         SpotPriceFilter,
     },
     parse::{
-        bool_or_int, deserialize_decimal_or_zero, deserialize_i32_or_string,
-        deserialize_optional_decimal_or_zero, deserialize_string_to_u8, masked_secret, on_off_bool,
+        bool_or_int, deserialize_decimal_or_zero, deserialize_optional_decimal_or_zero,
+        deserialize_string_to_u8, masked_secret, on_off_bool,
     },
 };
 
@@ -43,7 +43,7 @@ use crate::common::{
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.bybit", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -98,7 +98,7 @@ impl BybitOrderCursorList {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.bybit", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -248,7 +248,7 @@ pub type BybitTickersOptionResponse = BybitListResponse<BybitTickerOption>;
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.bybit", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -719,7 +719,7 @@ pub type BybitInstrumentOptionResponse = BybitCursorListResponse<BybitInstrument
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.bybit", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -869,7 +869,7 @@ pub type BybitAccountInfoResponse = BybitResponse<BybitAccountInfo>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.bybit", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -910,7 +910,6 @@ pub struct BybitOrder {
     pub reduce_only: bool,
     pub close_on_trigger: bool,
     pub smp_type: BybitSmpType,
-    #[serde(deserialize_with = "deserialize_i32_or_string")]
     pub smp_group: i32,
     pub smp_order_id: Ustr,
     pub tpsl_mode: Option<BybitTpSlMode>,
@@ -1402,7 +1401,7 @@ pub type BybitBorrowResponse = BybitResponse<BybitBorrowResult>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BybitNoConvertRepayResult {
-    pub result_status: BybitRepayStatus,
+    pub result_status: String,
 }
 
 /// Response alias for no-convert repay requests.
@@ -1412,25 +1411,11 @@ pub struct BybitNoConvertRepayResult {
 /// - <https://bybit-exchange.github.io/docs/v5/account/no-convert-repay>
 pub type BybitNoConvertRepayResponse = BybitResponse<BybitNoConvertRepayResult>;
 
-/// Result from a manual repay (with conversion) operation.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BybitRepayResult {
-    pub result_status: BybitRepayStatus,
-}
-
-/// Response alias for manual repay requests.
-///
-/// # References
-///
-/// - <https://bybit-exchange.github.io/docs/v5/account/repay>
-pub type BybitRepayResponse = BybitResponse<BybitRepayResult>;
-
 /// API key permissions.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.bybit", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -1487,7 +1472,7 @@ pub struct BybitApiKeyPermissions {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.bybit", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -1981,40 +1966,6 @@ mod tests {
         assert_eq!(order.tpsl_mode, Some(BybitTpSlMode::Full));
         assert_eq!(order.order_type, BybitOrderType::Limit);
         assert_eq!(order.smp_type, BybitSmpType::None);
-        assert_eq!(order.smp_group, 0);
-    }
-
-    #[rstest]
-    fn deserialize_order_response_accepts_string_smp_group() {
-        let mut json: serde_json::Value =
-            serde_json::from_str(&load_test_json("http_get_orders_history.json")).unwrap();
-        json["result"]["list"][0]["smpGroup"] = serde_json::Value::String("123456789".to_string());
-
-        let response: BybitOrderHistoryResponse = serde_json::from_value(json).unwrap();
-
-        assert_eq!(response.result.list[0].smp_group, 123_456_789);
-    }
-
-    #[rstest]
-    #[case::malformed(
-        "invalid",
-        "expected i32, received \"invalid\": invalid digit found in string"
-    )]
-    #[case::out_of_range(
-        "2147483648",
-        "expected i32, received \"2147483648\": number too large to fit in target type"
-    )]
-    fn deserialize_order_response_rejects_invalid_string_smp_group(
-        #[case] value: &str,
-        #[case] expected: &str,
-    ) {
-        let mut json: serde_json::Value =
-            serde_json::from_str(&load_test_json("http_get_orders_history.json")).unwrap();
-        json["result"]["list"][0]["smpGroup"] = serde_json::Value::String(value.to_string());
-
-        let result: Result<BybitOrderHistoryResponse, _> = serde_json::from_value(json);
-
-        assert_eq!(result.unwrap_err().to_string(), expected);
     }
 
     #[rstest]
@@ -2194,26 +2145,7 @@ mod tests {
 
         assert_eq!(response.ret_code, 0);
         assert_eq!(response.ret_msg, "OK");
-        assert_eq!(response.result.result_status, BybitRepayStatus::Success);
-    }
-
-    #[rstest]
-    fn deserialize_repay_response() {
-        let json = r#"{
-            "retCode": 0,
-            "retMsg": "success",
-            "result": {
-                "resultStatus": "P"
-            },
-            "retExtInfo": {},
-            "time": 1756295680801
-        }"#;
-
-        let response: BybitRepayResponse = serde_json::from_str(json).unwrap();
-
-        assert_eq!(response.ret_code, 0);
-        assert_eq!(response.ret_msg, "success");
-        assert_eq!(response.result.result_status, BybitRepayStatus::Processing);
+        assert_eq!(response.result.result_status, "SU");
     }
 
     #[rstest]

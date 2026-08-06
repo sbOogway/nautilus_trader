@@ -18,7 +18,6 @@
 use std::str::FromStr;
 
 use anyhow::Context;
-use jiff::Timestamp;
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     data::{Bar, BarType, BookOrder, OrderBookDelta, OrderBookDeltas, TradeTick},
@@ -32,7 +31,7 @@ use nautilus_model::{
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
     types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
 };
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 
 use crate::{
     common::{
@@ -55,12 +54,13 @@ use crate::{
 
 /// Parses an RFC 3339 timestamp string to `UnixNanos`.
 pub fn parse_rfc3339_timestamp(timestamp: &str) -> anyhow::Result<UnixNanos> {
-    let dt = timestamp
-        .parse::<Timestamp>()
+    let dt = chrono::DateTime::parse_from_rfc3339(timestamp)
         .context(format!("Failed to parse timestamp '{timestamp}'"))?;
-    let nanos = u64::try_from(dt.as_nanosecond())
+    let nanos = dt
+        .timestamp_nanos_opt()
         .context(format!("Timestamp out of range: '{timestamp}'"))?;
-    Ok(UnixNanos::from(nanos))
+    anyhow::ensure!(nanos >= 0, "Negative timestamp: '{timestamp}'");
+    Ok(UnixNanos::from(nanos as u64))
 }
 
 /// Parses a Unix epoch seconds string to `UnixNanos`.
@@ -671,7 +671,7 @@ pub fn parse_order_status_report(
         && avg_decimal.is_sign_positive()
         && !avg_decimal.is_zero()
     {
-        report = report.with_avg_px(avg_decimal);
+        report = report.with_avg_px(avg_decimal.to_f64().unwrap_or_default())?;
     }
 
     if post_only_from_configuration(order) {

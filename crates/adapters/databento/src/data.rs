@@ -33,7 +33,7 @@ use databento::{dbn, live::Subscription};
 use indexmap::IndexMap;
 use nautilus_common::{
     clients::DataClient,
-    live::{runner::get_data_event_sender, runtime::get_runtime, task::TaskHandles},
+    live::{runner::get_data_event_sender, runtime::get_runtime},
     messages::{
         DataEvent, DataResponse,
         data::{
@@ -58,6 +58,7 @@ use nautilus_model::{
     identifiers::{ClientId, InstrumentId, Symbol, Venue},
     instruments::{Instrument, InstrumentAny},
 };
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -176,7 +177,7 @@ pub struct DatabentoDataClient {
     /// Feed handler command senders per dataset.
     cmd_channels: Arc<Mutex<AHashMap<String, tokio::sync::mpsc::UnboundedSender<HandlerCommand>>>>,
     /// Task handles for lifecycle management.
-    task_handles: Arc<TaskHandles>,
+    task_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     /// Cancellation token for graceful shutdown.
     cancellation_token: CancellationToken,
     /// Publisher to venue mapping.
@@ -233,7 +234,7 @@ impl DatabentoDataClient {
             historical,
             loader,
             cmd_channels: Arc::new(Mutex::new(AHashMap::new())),
-            task_handles: Arc::new(TaskHandles::default()),
+            task_handles: Arc::new(Mutex::new(Vec::new())),
             cancellation_token: CancellationToken::new(),
             publisher_venue_map: Arc::new(publisher_venue_map),
             symbol_venue_map: Arc::new(AtomicMap::new()),
@@ -320,7 +321,14 @@ impl DatabentoDataClient {
     }
 
     fn abort_active_tasks(&self) {
-        self.task_handles.abort_all();
+        let handles = {
+            let mut task_handles = self.task_handles.lock().expect(MUTEX_POISONED);
+            std::mem::take(&mut *task_handles)
+        };
+
+        for handle in handles {
+            handle.abort();
+        }
     }
 
     /// Initializes the live feed handler for streaming data.
@@ -424,8 +432,11 @@ impl DatabentoDataClient {
             }
         });
 
-        self.task_handles.push(feed_handle);
-        self.task_handles.push(msg_handle);
+        {
+            let mut handles = self.task_handles.lock().expect(MUTEX_POISONED);
+            handles.push(feed_handle);
+            handles.push(msg_handle);
+        }
 
         cmd_tx
     }
@@ -502,7 +513,12 @@ impl DataClient for DatabentoDataClient {
         self.send_close_to_active_feeds();
         self.clear_feed_channels();
 
-        for handle in self.task_handles.take_all() {
+        let handles = {
+            let mut task_handles = self.task_handles.lock().expect(MUTEX_POISONED);
+            std::mem::take(&mut *task_handles)
+        };
+
+        for handle in handles {
             if let Err(e) = handle.await
                 && !e.is_cancelled()
             {
@@ -1464,12 +1480,15 @@ mod tests {
         let mut client = test_data_client();
 
         let handle = tokio::spawn(async { std::future::pending::<()>().await });
-        client.task_handles.push(handle);
+        {
+            let mut handles = client.task_handles.lock().expect(MUTEX_POISONED);
+            handles.push(handle);
+        }
         client.is_connected.store(true, Ordering::Relaxed);
 
         client.stop().unwrap();
 
-        assert!(client.task_handles.is_empty());
+        assert!(client.task_handles.lock().expect(MUTEX_POISONED).is_empty());
         assert!(client.is_disconnected());
     }
 

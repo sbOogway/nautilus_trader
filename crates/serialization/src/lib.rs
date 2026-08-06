@@ -108,9 +108,6 @@ pub mod capnp;
 #[cfg(feature = "sbe")]
 pub mod sbe;
 
-#[cfg(any(feature = "capnp", feature = "sbe"))]
-mod numeric;
-
 #[cfg(feature = "capnp")]
 macro_rules! include_capnp_module {
     ($name:ident, $path:expr) => {

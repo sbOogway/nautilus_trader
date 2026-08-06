@@ -12,10 +12,7 @@ echo "Branch name: ${branch_name}"
 base_version=$(echo "$current_version" | sed -E 's/(\.dev[0-9]{8}(\+[0-9]+)?|a[0-9]{8})$//')
 
 suffix=""
-target_version="${PUBLISH_WHEEL_VERSION:-}"
-if [[ -n "$target_version" ]]; then
-  echo "Using planned wheel version ${target_version}"
-elif [[ "$branch_name" == "develop" ]]; then
+if [[ "$branch_name" == "develop" ]]; then
   # Develop branch: use dev versioning with build number
   suffix=".dev$(date +%Y%m%d)+${GITHUB_RUN_NUMBER}"
 elif [[ "$branch_name" == "nightly" ]]; then
@@ -31,12 +28,8 @@ else
   echo "Not modifying version"
 fi
 
-if [[ -z "$target_version" && -n "$suffix" ]]; then
-  target_version="${base_version}${suffix}"
-fi
-
-if [[ -n "$target_version" && "$current_version" != "$target_version" ]]; then
-  new_version="$target_version"
+if [[ -n "$suffix" && "$current_version" != *"$suffix"* ]]; then
+  new_version="${base_version}${suffix}"
   if sed -i.bak "s/^version = \".*\"/version = \"${new_version}\"/" pyproject.toml; then
     echo "Version updated to ${new_version}"
     rm -f pyproject.toml.bak

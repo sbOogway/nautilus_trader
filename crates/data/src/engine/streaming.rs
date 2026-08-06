@@ -14,7 +14,7 @@
 // -------------------------------------------------------------------------------------------------
 
 use ahash::AHashMap;
-use jiff::Timestamp;
+use chrono::{DateTime, Utc};
 use nautilus_common::messages::data::{
     BarsResponse, BookDeltasResponse, BookDepthResponse, CustomDataResponse, DataResponse,
     FundingRatesResponse, InstrumentResponse, InstrumentsResponse, QuotesResponse, RequestBars,
@@ -193,11 +193,12 @@ impl DataEngine {
         !self.catalogs.is_empty()
     }
 
-    // Bounds the request window, walks the catalogs to find one whose missing
-    // intervals differ from the full requested range, then fans the parent out via
-    // the pipeline with one catalog leg plus one client leg per missing interval.
-    // With no catalog match and no resolvable client, the engine emits an empty
-    // response keyed by the parent request ID.
+    // Mirrors Cython `_handle_date_range_request` (engine.pyx:2071-2144): bound the
+    // request window, walk the catalogs to find one whose missing-intervals differ
+    // from the full requested range, then fan the parent out via the pipeline with
+    // one catalog leg plus one client leg per missing interval. With no catalog
+    // match and no resolvable client the engine emits an empty response keyed by
+    // the parent request id.
     pub(super) fn dispatch_date_range_request(
         &mut self,
         req: RequestCommand,
@@ -737,7 +738,7 @@ fn catalog_missing_intervals(
     catalog.get_missing_intervals_for_request(start, end, &key.data_cls, key.identifier.as_deref())
 }
 
-fn request_start(req: &RequestCommand) -> Option<Timestamp> {
+fn request_start(req: &RequestCommand) -> Option<DateTime<Utc>> {
     match req {
         RequestCommand::Data(cmd) => cmd.start,
         RequestCommand::Instrument(cmd) => cmd.start,
@@ -752,7 +753,7 @@ fn request_start(req: &RequestCommand) -> Option<Timestamp> {
     }
 }
 
-fn request_end(req: &RequestCommand) -> Option<Timestamp> {
+fn request_end(req: &RequestCommand) -> Option<DateTime<Utc>> {
     match req {
         RequestCommand::Data(cmd) => cmd.end,
         RequestCommand::Instrument(cmd) => cmd.end,
@@ -768,12 +769,12 @@ fn request_end(req: &RequestCommand) -> Option<Timestamp> {
 }
 
 fn bound_request_dates(
-    start: Option<Timestamp>,
-    end: Option<Timestamp>,
-    now: Timestamp,
+    start: Option<DateTime<Utc>>,
+    end: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
     query_past_data: bool,
-) -> (Timestamp, Timestamp) {
-    let zero = Timestamp::UNIX_EPOCH;
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    let zero = DateTime::<Utc>::from_timestamp_nanos(0);
     let mut start = start.unwrap_or(zero);
     let mut end = end.unwrap_or(now);
 
@@ -790,21 +791,21 @@ fn bound_request_dates(
     (start, end)
 }
 
-fn datetime_to_unix_nanos_or_zero(dt: Timestamp) -> UnixNanos {
-    UnixNanos::from(u64::try_from(dt.as_nanosecond().max(0)).unwrap_or(0))
+fn datetime_to_unix_nanos_or_zero(dt: DateTime<Utc>) -> UnixNanos {
+    UnixNanos::from(u64::try_from(dt.timestamp_nanos_opt().unwrap_or(0).max(0)).unwrap_or(0))
 }
 
-fn floor_to_utc_day(dt: Timestamp) -> Timestamp {
-    let midnight = jiff::tz::Offset::UTC.to_datetime(dt).date().at(0, 0, 0, 0);
-    jiff::tz::Offset::UTC
-        .to_timestamp(midnight)
-        .expect("midnight UTC is always valid")
+fn floor_to_utc_day(dt: DateTime<Utc>) -> DateTime<Utc> {
+    dt.date_naive()
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is always a valid time")
+        .and_utc()
 }
 
 fn with_dates_for_pipeline(
     req: &RequestCommand,
-    start: Option<Timestamp>,
-    end: Option<Timestamp>,
+    start: Option<DateTime<Utc>>,
+    end: Option<DateTime<Utc>>,
     ts_init: UnixNanos,
 ) -> RequestCommand {
     let new_id = UUID4::new();

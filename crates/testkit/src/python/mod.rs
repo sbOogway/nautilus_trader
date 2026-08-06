@@ -22,7 +22,7 @@ use pyo3::{prelude::*, wrap_pyfunction};
 
 use crate::{DataTesterConfig, ExecTesterConfig};
 
-/// Exposed through `nautilus_trader.testkit`.
+/// Loaded as `nautilus_pyo3.testkit`.
 ///
 /// # Errors
 ///

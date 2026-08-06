@@ -1221,10 +1221,7 @@ pub enum NautilusWsMessage {
 /// This enum allows both order status updates and fill reports.
 /// to be sent through the execution engine.
 #[derive(Debug, Clone)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "the variant size gap only crosses the threshold when high-precision widens the raw types"
-)]
+#[expect(clippy::large_enum_variant)]
 pub enum ExecutionReport {
     /// Order status report.
     Order(OrderStatusReport),

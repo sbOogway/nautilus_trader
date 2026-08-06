@@ -88,7 +88,7 @@ fn extract_interactive_brokers_exec_config(
     }
 }
 
-/// Exposed through `nautilus_trader.adapters.interactive_brokers`.
+/// Loaded as `nautilus_pyo3.interactive_brokers`.
 ///
 /// # Errors
 ///

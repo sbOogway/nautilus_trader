@@ -34,7 +34,7 @@ use ahash::AHashMap;
 
 use crate::{
     messages::{data::DataCommand, execution::TradingCommand},
-    msgbus::{self, Endpoint, MStr, MessagingSwitchboard},
+    msgbus::{self, MessagingSwitchboard},
     timer::{TimeEvent, TimeEventCallback, TimeEventHandler},
 };
 
@@ -493,102 +493,13 @@ pub fn replace_time_event_sender(sender: Arc<dyn TimeEventSender>) {
     });
 }
 
-/// A deferred trading command and its direct endpoint.
-#[derive(Debug)]
-pub struct TradingCommandMessage {
-    endpoint: MStr<Endpoint>,
-    command: TradingCommand,
-}
-
-impl TradingCommandMessage {
-    /// Creates a deferred trading command message.
-    #[must_use]
-    pub const fn new(endpoint: MStr<Endpoint>, command: TradingCommand) -> Self {
-        Self { endpoint, command }
-    }
-
-    /// Returns the trading command carried by this message.
-    #[must_use]
-    pub const fn command(&self) -> &TradingCommand {
-        &self.command
-    }
-
-    /// Returns the direct endpoint carried by this message.
-    #[must_use]
-    pub const fn endpoint(&self) -> MStr<Endpoint> {
-        self.endpoint
-    }
-
-    /// Dispatches the command and returns commands deferred by the endpoint handler.
-    #[must_use]
-    pub fn dispatch(self) -> Vec<Self> {
-        let guard = TradingCommandDispatchGuard::new();
-        msgbus::send_trading_command(self.endpoint, self.command);
-        guard.finish()
-    }
-}
-
-struct TradingCommandDispatchGuard {
-    active: bool,
-}
-
-impl TradingCommandDispatchGuard {
-    fn new() -> Self {
-        TRADING_CMD_DISPATCHES.with(|dispatches| dispatches.borrow_mut().push(Vec::new()));
-        Self { active: true }
-    }
-
-    fn finish(mut self) -> Vec<TradingCommandMessage> {
-        self.active = false;
-        TRADING_CMD_DISPATCHES.with(|dispatches| {
-            dispatches
-                .borrow_mut()
-                .pop()
-                .expect("trading command dispatch should be active")
-        })
-    }
-}
-
-impl Drop for TradingCommandDispatchGuard {
-    fn drop(&mut self) {
-        if self.active {
-            TRADING_CMD_DISPATCHES.with(|dispatches| {
-                dispatches.borrow_mut().pop();
-            });
-        }
-    }
-}
-
-/// Returns `true` while a deferred trading command is being dispatched.
-#[must_use]
-pub fn trading_cmd_is_dispatching() -> bool {
-    TRADING_CMD_DISPATCHES.with(|dispatches| !dispatches.borrow().is_empty())
-}
-
-/// Captures a trading command for dispatch after the current endpoint handler returns.
-///
-/// # Panics
-///
-/// Panics if no deferred trading command is being dispatched.
-pub fn capture_trading_cmd(message: TradingCommandMessage) {
-    TRADING_CMD_DISPATCHES.with(|dispatches| {
-        dispatches
-            .borrow_mut()
-            .last_mut()
-            .expect("trading command dispatch should be active")
-            .push(message);
-    });
-}
-
 /// Trait for trading command sending that can be implemented for both sync and async runners.
 pub trait TradingCommandSender {
-    /// Defers a trading command message.
+    /// Executes a trading command.
     ///
-    /// - **Sync runners** enqueue the message for synchronous execution.
-    /// - **Async runners** send the message to a channel for asynchronous execution.
-    ///
-    /// Runners dispatch each message to the direct endpoint it carries.
-    fn execute(&self, message: TradingCommandMessage);
+    /// - **Sync runners** send the command to a queue for synchronous execution.
+    /// - **Async runners** send the command to a channel for asynchronous execution.
+    fn execute(&self, command: TradingCommand);
 }
 
 /// Synchronous [`TradingCommandSender`] for backtest environments.
@@ -599,26 +510,20 @@ pub trait TradingCommandSender {
 pub struct SyncTradingCommandSender;
 
 impl TradingCommandSender for SyncTradingCommandSender {
-    fn execute(&self, message: TradingCommandMessage) {
-        TRADING_CMD_QUEUE.with(|q| q.borrow_mut().push(message));
+    fn execute(&self, command: TradingCommand) {
+        TRADING_CMD_QUEUE.with(|q| q.borrow_mut().push(command));
     }
 }
 
-/// Drains all buffered trading commands to their direct endpoints.
+/// Drain all buffered trading commands, dispatching each to the exec engine.
 pub fn drain_trading_cmd_queue() {
     TRADING_CMD_QUEUE.with(|q| {
-        let messages: Vec<TradingCommandMessage> = q.borrow_mut().drain(..).collect();
-        for message in messages {
-            dispatch_trading_cmd(message);
+        let commands: Vec<TradingCommand> = q.borrow_mut().drain(..).collect();
+        let endpoint = MessagingSwitchboard::exec_engine_execute();
+        for cmd in commands {
+            msgbus::send_trading_command(endpoint, cmd);
         }
     });
-}
-
-fn dispatch_trading_cmd(message: TradingCommandMessage) {
-    let mut messages = vec![message];
-    while let Some(message) = messages.pop() {
-        messages.extend(message.dispatch().into_iter().rev());
-    }
 }
 
 /// Returns `true` if the trading command queue is empty.
@@ -682,8 +587,7 @@ thread_local! {
     static DATA_CMD_SENDER: RefCell<Option<Arc<dyn DataCommandSender>>> = const { RefCell::new(None) };
     static EXEC_CMD_SENDER: RefCell<Option<Arc<dyn TradingCommandSender>>> = const { RefCell::new(None) };
     static DATA_CMD_QUEUE: RefCell<Vec<DataCommand>> = const { RefCell::new(Vec::new()) };
-    static TRADING_CMD_QUEUE: RefCell<Vec<TradingCommandMessage>> = const { RefCell::new(Vec::new()) };
-    static TRADING_CMD_DISPATCHES: RefCell<Vec<Vec<TradingCommandMessage>>> = const { RefCell::new(Vec::new()) };
+    static TRADING_CMD_QUEUE: RefCell<Vec<TradingCommand>> = const { RefCell::new(Vec::new()) };
 }
 
 #[cfg(test)]

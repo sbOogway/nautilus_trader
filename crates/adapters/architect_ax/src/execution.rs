@@ -17,6 +17,7 @@
 
 use std::{
     future::Future,
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -25,7 +26,7 @@ use async_trait::async_trait;
 use futures_util::{StreamExt, pin_mut};
 use nautilus_common::{
     clients::ExecutionClient,
-    live::{get_runtime, runner::get_exec_event_sender, task::TaskHandles},
+    live::{get_runtime, runner::get_exec_event_sender},
     messages::execution::{
         BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
         GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
@@ -33,7 +34,7 @@ use nautilus_common::{
     },
 };
 use nautilus_core::{
-    AtomicMap, UUID4, UnixNanos,
+    AtomicMap, MUTEX_POISONED, UUID4, UnixNanos,
     time::{AtomicTime, get_atomic_clock_realtime},
 };
 use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
@@ -90,7 +91,7 @@ pub struct AxExecutionClient {
     ws_orders: AxOrdersWebSocketClient,
     ws_stream_handle: Option<JoinHandle<()>>,
     auth_refresh_handle: Option<JoinHandle<()>>,
-    pending_tasks: TaskHandles,
+    pending_tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl AxExecutionClient {
@@ -140,7 +141,7 @@ impl AxExecutionClient {
             ws_orders,
             ws_stream_handle: None,
             auth_refresh_handle: None,
-            pending_tasks: TaskHandles::default(),
+            pending_tasks: Mutex::new(Vec::new()),
         })
     }
 
@@ -211,7 +212,11 @@ impl AxExecutionClient {
         let emitter = self.emitter.clone();
         let clock = self.clock;
 
-        let http_client = self.http_client.clone();
+        let http_client = if order_type == OrderType::Market {
+            Some(self.http_client.clone())
+        } else {
+            None
+        };
 
         self.spawn_task("submit_order", async move {
             // AX emulates market orders with preview-priced IOC limits, so book moves
@@ -225,13 +230,10 @@ impl AxExecutionClient {
                         .map_err(|e| anyhow::anyhow!("Invalid order side: {e}"))?;
                     let qty_contracts = quantity_to_contracts(quantity)?;
 
-                    let instrument = http_client.get_instrument(&symbol).ok_or_else(|| {
-                        anyhow::anyhow!("Instrument {instrument_id} not found in cache")
-                    })?;
-
                     let request =
                         PreviewAggressiveLimitOrderRequest::new(symbol, qty_contracts, ax_side);
                     let response = http_client
+                        .expect("HTTP client should be set for market orders")
                         .inner
                         .preview_aggressive_limit_order(&request)
                         .await
@@ -254,13 +256,7 @@ impl AxExecutionClient {
                         )
                     })?;
 
-                    let price =
-                        Price::from_decimal_dp(limit_price_decimal, instrument.price_precision())
-                            .with_context(|| {
-                                format!(
-                                    "Failed to convert AX take-through price {limit_price_decimal} for {instrument_id}"
-                                )
-                            })?;
+                    let price = Price::from(limit_price_decimal.to_string().as_str());
                     log::debug!("Market order take-through price: {price} for {instrument_id}",);
                     Ok(price)
                 }
@@ -371,11 +367,16 @@ impl AxExecutionClient {
             }
         });
 
-        self.pending_tasks.push(handle);
+        let mut tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
+        tasks.retain(|handle| !handle.is_finished());
+        tasks.push(handle);
     }
 
     fn abort_pending_tasks(&self) {
-        self.pending_tasks.abort_all();
+        let mut tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
+        for handle in tasks.drain(..) {
+            handle.abort();
+        }
     }
 
     /// Polls the cache until the account is registered or timeout is reached.
@@ -446,20 +447,7 @@ impl ExecutionClient for AxExecutionClient {
             handle.abort();
         }
 
-        let credential =
-            Credential::resolve(self.config.api_key.clone(), self.config.api_secret.clone())
-                .context("API credentials not configured")?;
-        let token = self.authenticate(&credential).await?;
-
-        // Instruments load after authenticating because their fee rates come from the
-        // authenticated `/whoami`. A zero-fee fallback would outlive the failure that caused it,
-        // since `set_instruments_initialized` stops a reconnect from retrying the load.
         if !self.core.instruments_initialized() {
-            self.http_client
-                .request_account_fees()
-                .await
-                .context("failed to resolve AX account fee rates")?;
-
             let instruments = self
                 .http_client
                 .request_instruments(None, None)
@@ -476,6 +464,10 @@ impl ExecutionClient for AxExecutionClient {
             self.core.set_instruments_initialized();
         }
 
+        let credential =
+            Credential::resolve(self.config.api_key.clone(), self.config.api_secret.clone())
+                .context("API credentials not configured")?;
+        let token = self.authenticate(&credential).await?;
         self.ws_orders.connect(&token).await?;
         log::debug!("Connected to orders WebSocket");
 
@@ -986,20 +978,10 @@ impl ExecutionClient for AxExecutionClient {
         let cid_map = self.ws_orders.cid_to_client_order_id().clone();
         let cid_resolver = move |cid: u64| cid_map.get(&cid).map(|v| *v);
 
-        let mut reports = if cmd.open_only {
-            self.http_client
-                .request_order_status_reports(self.core.account_id, Some(cid_resolver))
-                .await?
-        } else {
-            self.http_client
-                .request_historical_order_status_reports(
-                    self.core.account_id,
-                    cmd.start,
-                    cmd.end,
-                    Some(cid_resolver),
-                )
-                .await?
-        };
+        let mut reports = self
+            .http_client
+            .request_order_status_reports(self.core.account_id, Some(cid_resolver))
+            .await?;
 
         if let Some(instrument_id) = cmd.instrument_id {
             reports.retain(|report| report.instrument_id == instrument_id);
@@ -1876,13 +1858,13 @@ fn validate_order_for_ax_submit(order: &OrderAny) -> anyhow::Result<()> {
         );
     }
 
-    // AX accepts only GTC, IOC, and DAY; deny others locally to avoid an opaque venue error
+    // AX accepts only GTC, IOC and DAY; deny others locally to avoid an opaque venue error
     if !matches!(
         order.time_in_force(),
         TimeInForce::Gtc | TimeInForce::Ioc | TimeInForce::Day
     ) {
         anyhow::bail!(
-            "Unsupported time in force: {:?}, AX supports GTC, IOC, and DAY",
+            "Unsupported time in force: {:?}, AX supports GTC, IOC and DAY",
             order.time_in_force(),
         );
     }
@@ -1986,7 +1968,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        common::enums::{AxOrderSide, AxOrderStatus, AxTimeInForce},
+        common::enums::{AxOrderSide, AxOrderStatus, AxTimeInForce, AxTradeSide},
         http::error::AxBuildError,
         websocket::{
             messages::{AxWsOrderExpired, AxWsTradeExecution, OrderMetadata},
@@ -2119,7 +2101,7 @@ mod tests {
             s: Ustr::from("BTC-PERP"),
             q: qty,
             p: price,
-            d: AxOrderSide::Buy,
+            d: AxTradeSide::Buy,
             agg,
         }
     }

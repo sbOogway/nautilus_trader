@@ -56,11 +56,10 @@ run_release_verification_with_retry() {
   output_file="$(mktemp "${TMPDIR:-/tmp}/release-verification.XXXXXX")"
 
   local attempt delay_seconds status
-  attempt=1
   delay_seconds="$initial_delay_seconds"
   status=0
 
-  while [[ "$attempt" -le "$attempts" ]]; do
+  for attempt in $(seq 1 "$attempts"); do
     : > "$output_file"
 
     if "$@" > "$output_file" 2>&1; then
@@ -91,8 +90,6 @@ run_release_verification_with_retry() {
         delay_seconds="$max_delay_seconds"
       fi
     fi
-
-    attempt=$((attempt + 1))
   done
 
   cat "$output_file" >&2

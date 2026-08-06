@@ -23,11 +23,9 @@ use nautilus_common::{
     enums::Environment,
     live::get_runtime,
     logging::logger::LoggerConfig,
-    msgbus::MessageBusConfig,
     python::{
-        actor::{PyDataActor, PyDataActorInner, register_python_exec_algorithm_endpoint},
+        actor::{PyDataActor, register_python_exec_algorithm_endpoint},
         cache::PyCache,
-        msgbus::get_global_msgbus_factory_registry,
     },
 };
 #[cfg(feature = "examples")]
@@ -435,7 +433,7 @@ impl LiveNode {
         self.kernel_mut()
             .trader
             .borrow_mut()
-            .add_actor_id_for_lifecycle::<PyDataActorInner>(actor_id)
+            .add_actor_id_for_lifecycle(actor_id)
             .map_err(to_pyruntime_err)?;
 
         log::info!("Registered Python actor {actor_id}");
@@ -452,11 +450,6 @@ impl LiveNode {
     /// Returns an error if:
     /// - The node is currently running.
     /// - A strategy with the same ID is already registered.
-    /// - The strategy configures one or more external order claims and the request repeats
-    ///   an instrument, or either tier already contains a requested claim.
-    /// - The strategy configures one or more external order claims or an OMS type override,
-    ///   and the execution engine is already borrowed. A strategy configuring neither does
-    ///   not take the borrow and cannot fail this way.
     #[allow(
         unsafe_code,
         reason = "Required for Python strategy component registration"
@@ -749,7 +742,7 @@ impl LiveNode {
                 })?;
 
             if let Some(config) = config.as_ref() {
-                py_exec_algorithm_ref.configure_from_py_config(config)?;
+                configure_py_execution_algorithm(&mut py_exec_algorithm_ref, config)?;
             }
 
             py_exec_algorithm_ref.set_python_instance(exec_algorithm.clone_ref(py));
@@ -819,7 +812,7 @@ impl LiveNode {
                     python_exec_algorithm.extract::<PyRefMut<PyExecutionAlgorithm>>()
                 {
                     if let Some(config_obj) = config_instance.as_ref() {
-                        py_exec_algorithm_ref.configure_from_py_config(config_obj)?;
+                        configure_py_execution_algorithm(&mut py_exec_algorithm_ref, config_obj)?;
                     }
 
                     py_exec_algorithm_ref
@@ -1330,35 +1323,6 @@ impl LiveNodeBuilderPy {
         }
     }
 
-    #[pyo3(name = "with_msgbus_config")]
-    fn py_with_msgbus_config(&self, config: MessageBusConfig) -> PyResult<Self> {
-        let mut inner_ref = self.inner.borrow_mut();
-        if let Some(builder) = inner_ref.take() {
-            *inner_ref = Some(builder.with_msgbus_config(config));
-            Ok(Self {
-                inner: self.inner.clone(),
-            })
-        } else {
-            Err(to_pyruntime_err("Builder already consumed"))
-        }
-    }
-
-    #[pyo3(name = "with_external_msgbus_factory")]
-    fn py_with_external_msgbus_factory(&self, factory: Py<PyAny>) -> PyResult<Self> {
-        let mut inner_ref = self.inner.borrow_mut();
-        if inner_ref.is_none() {
-            return Err(to_pyruntime_err("Builder already consumed"));
-        }
-
-        let factory =
-            Python::attach(|py| get_global_msgbus_factory_registry().extract(py, factory))?;
-        let builder = inner_ref.take().expect("Builder checked above");
-        *inner_ref = Some(builder.with_external_msgbus_factory(factory));
-        Ok(Self {
-            inner: self.inner.clone(),
-        })
-    }
-
     #[pyo3(name = "with_portfolio_config")]
     fn py_with_portfolio_config(&self, config: PortfolioConfig) -> PyResult<Self> {
         let mut inner_ref = self.inner.borrow_mut();
@@ -1703,6 +1667,40 @@ fn extract_bool_config_attr(config_obj: &Bound<'_, PyAny>, attr: &str) -> Option
         .and_then(|val| val.extract::<bool>().ok())
 }
 
+fn configure_py_execution_algorithm(
+    py_exec_algorithm_ref: &mut PyRefMut<'_, PyExecutionAlgorithm>,
+    config_obj: &Bound<'_, PyAny>,
+) -> anyhow::Result<()> {
+    let id_attr = config_obj
+        .getattr("exec_algorithm_id")
+        .ok()
+        .filter(|v| !v.is_none())
+        .or_else(|| config_obj.getattr("actor_id").ok().filter(|v| !v.is_none()));
+
+    if let Some(id_value) = id_attr {
+        let exec_algorithm_id = if let Ok(eaid) = id_value.extract::<ExecAlgorithmId>() {
+            eaid
+        } else if let Ok(aid) = id_value.extract::<ActorId>() {
+            ExecAlgorithmId::new_checked(aid.inner().as_str())?
+        } else if let Ok(id_str) = id_value.extract::<String>() {
+            ExecAlgorithmId::new_checked(&id_str)?
+        } else {
+            anyhow::bail!("Invalid `exec_algorithm_id`/`actor_id` type");
+        };
+        py_exec_algorithm_ref.set_exec_algorithm_id(exec_algorithm_id);
+    }
+
+    if let Some(val) = extract_bool_config_attr(config_obj, "log_events") {
+        py_exec_algorithm_ref.set_log_events(val);
+    }
+
+    if let Some(val) = extract_bool_config_attr(config_obj, "log_commands") {
+        py_exec_algorithm_ref.set_log_commands(val);
+    }
+
+    Ok(())
+}
+
 fn extract_external_order_claims_config_attr(
     config_obj: &Bound<'_, PyAny>,
 ) -> anyhow::Result<Option<Vec<InstrumentId>>> {
@@ -1765,12 +1763,8 @@ mod tests {
             data::{BarsResponse, RequestBars},
             execution::{CancelAllOrders, SubmitOrder, TradingCommand},
         },
-        msgbus::{
-            BusMessage, MessageBusBacking, MessageBusBackingFactory, MessageBusConfig,
-            MessagingSwitchboard, get_message_bus,
-        },
-        python::msgbus::get_global_msgbus_factory_registry,
-        runner::{TradingCommandMessage, get_trading_cmd_sender},
+        msgbus::get_message_bus,
+        runner::get_trading_cmd_sender,
     };
     use nautilus_core::{UUID4, UnixNanos};
     use nautilus_execution::engine::stubs::StubExecutionClient;
@@ -1788,7 +1782,7 @@ mod tests {
         strategy::{StrategyConfig, StrategyCore},
     };
     use pyo3::{
-        Py, PyRef, Python,
+        PyRef, Python,
         types::{PyAnyMethods, PyDict, PyModule, PyModuleMethods},
     };
     use rstest::rstest;
@@ -1800,133 +1794,6 @@ mod tests {
     enum ShutdownRunPath {
         Native,
         PyO3,
-    }
-
-    static TEST_MSGBUS_FACTORY_CALLS: AtomicUsize = AtomicUsize::new(0);
-
-    #[derive(Debug, Clone)]
-    #[pyo3::pyclass(name = "TestMessageBusFactory", from_py_object)]
-    struct TestMessageBusFactory;
-
-    impl MessageBusBackingFactory for TestMessageBusFactory {
-        fn create(
-            &self,
-            trader_id: TraderId,
-            _instance_id: UUID4,
-            config: MessageBusConfig,
-        ) -> anyhow::Result<Box<dyn MessageBusBacking>> {
-            TEST_MSGBUS_FACTORY_CALLS.fetch_add(1, Ordering::SeqCst);
-
-            anyhow::ensure!(
-                trader_id == TraderId::from("TESTER-001"),
-                "unexpected trader ID: {trader_id}"
-            );
-            anyhow::ensure!(
-                config.external_streams == Some(vec!["external-stream".to_string()]),
-                "unexpected external streams: {:?}",
-                config.external_streams
-            );
-
-            let (_tx, rx) = tokio::sync::mpsc::channel(1);
-            Ok(Box::new(TestMessageBusBacking {
-                rx: Some(rx),
-                closed: false,
-            }))
-        }
-    }
-
-    #[derive(Debug)]
-    struct TestMessageBusBacking {
-        rx: Option<tokio::sync::mpsc::Receiver<BusMessage>>,
-        closed: bool,
-    }
-
-    impl MessageBusBacking for TestMessageBusBacking {
-        fn is_closed(&self) -> bool {
-            self.closed
-        }
-
-        fn publish(&self, _message: BusMessage) {}
-
-        fn take_receiver(&mut self) -> anyhow::Result<tokio::sync::mpsc::Receiver<BusMessage>> {
-            self.rx
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("Stream receiver already taken"))
-        }
-
-        fn close(&mut self) {
-            self.closed = true;
-        }
-    }
-
-    #[expect(clippy::needless_pass_by_value)]
-    fn extract_test_msgbus_factory(
-        py: Python<'_>,
-        factory: Py<pyo3::PyAny>,
-    ) -> pyo3::PyResult<Box<dyn MessageBusBackingFactory>> {
-        Ok(Box::new(factory.extract::<TestMessageBusFactory>(py)?))
-    }
-
-    #[rstest]
-    fn test_python_builder_installs_external_msgbus_factory() {
-        TEST_MSGBUS_FACTORY_CALLS.store(0, Ordering::SeqCst);
-        get_global_msgbus_factory_registry()
-            .register(
-                "TestMessageBusFactory".to_string(),
-                extract_test_msgbus_factory,
-            )
-            .unwrap();
-        Python::initialize();
-
-        Python::attach(|py| {
-            let factory = Py::new(py, TestMessageBusFactory).unwrap().into_any();
-            let builder = LiveNode::py_builder(
-                "TEST".to_string(),
-                TraderId::from("TESTER-001"),
-                Environment::Sandbox,
-            )
-            .unwrap()
-            .py_with_msgbus_config(MessageBusConfig {
-                external_streams: Some(vec!["external-stream".to_string()]),
-                ..Default::default()
-            })
-            .unwrap()
-            .py_with_external_msgbus_factory(factory)
-            .unwrap();
-
-            let node = builder.py_build().unwrap();
-
-            assert!(!node.is_running());
-            assert_eq!(TEST_MSGBUS_FACTORY_CALLS.load(Ordering::SeqCst), 1);
-            get_message_bus().borrow_mut().dispose();
-        });
-    }
-
-    #[rstest]
-    fn test_python_builder_rejects_unregistered_external_msgbus_factory() {
-        Python::initialize();
-
-        Python::attach(|py| {
-            let factory = PyDict::new(py).unbind().into_any();
-            let builder = LiveNode::py_builder(
-                "TEST".to_string(),
-                TraderId::from("TESTER-001"),
-                Environment::Sandbox,
-            )
-            .unwrap();
-
-            let error = builder
-                .py_with_external_msgbus_factory(factory)
-                .unwrap_err();
-
-            assert_eq!(
-                error.to_string(),
-                "NotImplementedError: No message bus factory extractor registered for 'dict'"
-            );
-            builder
-                .py_with_msgbus_config(MessageBusConfig::default())
-                .unwrap();
-        });
     }
 
     #[derive(Debug)]
@@ -1951,9 +1818,8 @@ mod tests {
 
     impl DataActor for ShutdownCancelStrategy {
         fn on_stop(&mut self) -> anyhow::Result<()> {
-            get_trading_cmd_sender().execute(TradingCommandMessage::new(
-                MessagingSwitchboard::exec_engine_execute(),
-                TradingCommand::CancelAllOrders(CancelAllOrders::new(
+            get_trading_cmd_sender().execute(TradingCommand::CancelAllOrders(
+                CancelAllOrders::new(
                     TraderId::from("TESTER-001"),
                     None,
                     StrategyId::from("SHUTDOWN-CANCEL-001"),
@@ -1963,7 +1829,7 @@ mod tests {
                     UnixNanos::default(),
                     None,
                     None,
-                )),
+                ),
             ));
             Ok(())
         }

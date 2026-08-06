@@ -17,7 +17,7 @@
 
 use ahash::AHashMap;
 use anyhow::Context;
-use jiff::{Span, Timestamp, tz::Offset};
+use chrono::{Duration, TimeZone, Timelike, Utc};
 use nautilus_core::{UUID4, UnixNanos, datetime::NANOSECONDS_IN_MILLISECOND};
 use nautilus_model::{
     data::{
@@ -52,17 +52,25 @@ use crate::{common::parse::build_public_trade_id, http::models::DeribitPosition}
 
 fn next_8_utc(from_ns: UnixNanos) -> anyhow::Result<UnixNanos> {
     let from_secs = from_ns.as_u64() / 1_000_000_000;
-    let timestamp = Timestamp::from_second(i64::try_from(from_secs)?)?;
-    let dt = Offset::UTC.to_datetime(timestamp);
-    let date = if dt.hour() < 8 {
-        dt.date()
+    let dt = Utc
+        .timestamp_opt(from_secs as i64, 0)
+        .single()
+        .context("failed to convert timestamp to UTC datetime")?;
+    let next_8 = if dt.hour() < 8 {
+        dt.date_naive()
+            .and_hms_opt(8, 0, 0)
+            .context("failed to construct 08:00 UTC time")?
+            .and_utc()
     } else {
-        dt.date().checked_add(Span::new().days(1))?
+        (dt.date_naive() + Duration::days(1))
+            .and_hms_opt(8, 0, 0)
+            .context("failed to construct next-day 08:00 UTC time")?
+            .and_utc()
     };
-    let next_8 = Offset::UTC.to_timestamp(date.at(8, 0, 0, 0))?;
-    let nanos = u64::try_from(next_8.as_nanosecond())
-        .context("GTD expiry timestamp out of UnixNanos range")?;
-    Ok(UnixNanos::from(nanos))
+    let nanos = next_8
+        .timestamp_nanos_opt()
+        .context("GTD expiry timestamp out of nanosecond range")?;
+    Ok(UnixNanos::from(nanos as u64))
 }
 
 /// Parses a Deribit trade message into a Nautilus `TradeTick`.
@@ -687,7 +695,11 @@ pub fn parse_chart_msg(
 
     // Adjust timestamp to close time if configured
     if timestamp_on_close {
-        let interval_ns = bar_type.spec().timedelta().as_nanos();
+        let interval_ns = bar_type
+            .spec()
+            .timedelta()
+            .num_nanoseconds()
+            .context("bar specification produced non-integer interval")?;
         let interval_ns = u64::try_from(interval_ns)
             .context("bar interval overflowed the u64 range for nanoseconds")?;
         let updated = ts_event
@@ -805,7 +817,7 @@ pub fn parse_user_order_msg(
     if let Some(avg_price) = msg.average_price
         && !avg_price.is_zero()
     {
-        report = report.with_avg_px(avg_price);
+        report = report.with_avg_px(avg_price.to_f64().unwrap_or_default())?;
     }
 
     // Add trigger price for stop/take orders

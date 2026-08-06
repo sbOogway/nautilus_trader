@@ -35,7 +35,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use jiff::{Timestamp, tz::Offset};
+use chrono::Utc;
 use nautilus_binance::{
     common::{
         credential::resolve_credentials,
@@ -194,9 +194,7 @@ async fn capture_fixtures(config: &CaptureConfig) -> anyhow::Result<FixtureManif
 
     Ok(FixtureManifest {
         command: env::args().collect::<Vec<_>>().join(" "),
-        captured_at: Timestamp::now()
-            .display_with_offset(Offset::UTC)
-            .to_string(),
+        captured_at: Utc::now().to_rfc3339(),
         environment: environment_name(config.environment).to_string(),
         symbol: config.symbol.clone(),
         interval: config.interval.clone(),
@@ -514,7 +512,7 @@ async fn capture_order_flow_fixtures(
         .expect("validated order_quantity");
     let order_price = config.order_price.as_ref().expect("validated order_price");
 
-    let client_order_id = format!("ntfx{}a", Timestamp::now().as_millisecond().unsigned_abs());
+    let client_order_id = format!("ntfx{}a", Utc::now().timestamp_millis().unsigned_abs());
     let new_order_params = NewOrderParams::limit(
         &config.symbol,
         BinanceSide::Buy,
@@ -630,7 +628,7 @@ async fn capture_order_flow_fixtures(
     )?;
 
     let cancel_all_client_order_id =
-        format!("ntfx{}b", Timestamp::now().as_millisecond().unsigned_abs());
+        format!("ntfx{}b", Utc::now().timestamp_millis().unsigned_abs());
     let cancel_all_order_params = NewOrderParams::limit(
         &config.symbol,
         BinanceSide::Buy,
@@ -768,9 +766,7 @@ fn record_fixture(
 
     let metadata = FixtureMetadata {
         fixture: record.clone(),
-        captured_at: Timestamp::now()
-            .display_with_offset(Offset::UTC)
-            .to_string(),
+        captured_at: Utc::now().to_rfc3339(),
     };
     write_json(&output_root.join(&record.metadata_path), &metadata)?;
 

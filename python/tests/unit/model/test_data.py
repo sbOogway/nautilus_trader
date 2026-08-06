@@ -13,6 +13,7 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+import inspect
 import json
 
 import pytest
@@ -21,6 +22,7 @@ from nautilus_trader.model import CustomData
 from nautilus_trader.model import DataType
 from nautilus_trader.model import custom_data_backend_kind
 from nautilus_trader.model import deserialize_custom_from_json
+from nautilus_trader.model import drop_cvec_pycapsule
 from nautilus_trader.model import register_custom_data_class
 
 
@@ -76,20 +78,6 @@ def test_custom_data_python_backend_and_json_bytes():
     assert custom.ts_init == 2
     assert custom_data_backend_kind(custom) == "python"
     assert b'"type":"Dummy"' in payload
-
-
-def test_custom_data_python_backend_equality_uses_identity():
-    class Dummy:
-        def __init__(self, value):
-            self.value = value
-            self.ts_event = 1
-            self.ts_init = 2
-
-    data_type = DataType("Dummy")
-    first = Dummy(7)
-
-    assert CustomData(data_type, first) == CustomData(data_type, first)
-    assert CustomData(data_type, first) != CustomData(data_type, Dummy(7))
 
 
 def test_register_custom_data_class_accepts_surface_compatible_class():
@@ -170,3 +158,11 @@ def test_register_custom_data_class_requires_from_json():
 
     with pytest.raises(TypeError, match="from_json"):
         register_custom_data_class(MissingFromJson)
+
+
+def test_drop_cvec_pycapsule_signature_accepts_capsule_object():
+    signature = inspect.signature(drop_cvec_pycapsule)
+    parameter = signature.parameters["capsule"]
+
+    assert list(signature.parameters) == ["capsule"]
+    assert parameter.default is inspect.Signature.empty

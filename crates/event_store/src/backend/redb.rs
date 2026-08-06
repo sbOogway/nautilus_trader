@@ -296,14 +296,7 @@ impl RedbBackend {
                 }
             }
         }
-        // Break start-time ties on the run id so parent selection and retention stay
-        // deterministic: stable sort alone preserves the platform-dependent `read_dir`
-        // order.
-        manifests.sort_by(|a, b| {
-            a.start_ts_init
-                .cmp(&b.start_ts_init)
-                .then_with(|| a.run_id.cmp(&b.run_id))
-        });
+        manifests.sort_by_key(|m| m.start_ts_init);
         Ok(manifests)
     }
 
@@ -656,8 +649,6 @@ impl EventStore for RedbBackend {
             let entry = codec::decode_from_slice::<EventStoreEntry>(bytes)
                 .map_err(|e| EventStoreError::Corrupted(format!("decode entry seq={seq}: {e}")))?;
 
-            check_embedded_seq(seq, &entry)?;
-
             if entry.recompute_hash() != entry.entry_hash {
                 return Err(EventStoreError::HashMismatch { seq });
             }
@@ -701,8 +692,6 @@ impl EventStore for RedbBackend {
         let bytes = value.value();
         let entry = codec::decode_from_slice::<EventStoreEntry>(bytes)
             .map_err(|e| EventStoreError::Corrupted(format!("decode entry seq={seq}: {e}")))?;
-
-        check_embedded_seq(seq, &entry)?;
 
         if entry.recompute_hash() != entry.entry_hash {
             return Err(EventStoreError::HashMismatch { seq });
@@ -812,18 +801,6 @@ fn missing_manifest(path: &Path) -> EventStoreError {
         "missing manifest in run file at {}",
         path.display()
     ))
-}
-
-// The entry hash covers the embedded seq, not the table key, so a moved or
-// duplicated row still hashes correctly; both read paths refuse it here.
-fn check_embedded_seq(seq: u64, entry: &EventStoreEntry) -> Result<(), EventStoreError> {
-    if entry.seq != seq {
-        return Err(EventStoreError::SeqMismatch {
-            table_key: seq,
-            embedded_seq: entry.seq,
-        });
-    }
-    Ok(())
 }
 
 fn begin_immediate_write(db: &Database) -> Result<WriteTransaction, EventStoreError> {

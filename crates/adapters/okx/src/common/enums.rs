@@ -133,9 +133,6 @@ pub enum OKXOrderType {
     Market,
     /// Limit order, executed only at specified price or better.
     Limit,
-    /// Retail Price Improvement order.
-    #[serde(alias = "elp")]
-    Rpi,
     PostOnly,        // limit only, requires "px" to be provided
     Fok,             // Market order if "px" is not provided, otherwise limit order
     Ioc,             // Market order if "px" is not provided, otherwise limit order
@@ -167,7 +164,7 @@ pub enum OKXOrderType {
     pyo3::pyclass(
         eq,
         eq_int,
-        module = "nautilus_trader.adapters.okx",
+        module = "nautilus_trader.core.nautilus_pyo3.okx",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -261,7 +258,7 @@ impl From<LiquiditySide> for OKXExecType {
     pyo3::pyclass(
         eq,
         eq_int,
-        module = "nautilus_trader.adapters.okx",
+        module = "nautilus_trader.core.nautilus_pyo3.okx",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -438,7 +435,7 @@ pub enum OKXSpreadState {
     pyo3::pyclass(
         eq,
         eq_int,
-        module = "nautilus_trader.adapters.okx",
+        module = "nautilus_trader.core.nautilus_pyo3.okx",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -524,7 +521,7 @@ impl TryFrom<OKXOptionType> for OptionKind {
     pyo3::pyclass(
         eq,
         eq_int,
-        module = "nautilus_trader.adapters.okx",
+        module = "nautilus_trader.core.nautilus_pyo3.okx",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -595,7 +592,7 @@ impl From<OKXGreeksType> for GreeksConvention {
     pyo3::pyclass(
         eq,
         eq_int,
-        module = "nautilus_trader.adapters.okx",
+        module = "nautilus_trader.core.nautilus_pyo3.okx",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -671,7 +668,7 @@ pub enum OKXAccountMode {
     pyo3::pyclass(
         eq,
         eq_int,
-        module = "nautilus_trader.adapters.okx",
+        module = "nautilus_trader.core.nautilus_pyo3.okx",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -713,7 +710,7 @@ pub enum OKXMarginMode {
     pyo3::pyclass(
         eq,
         eq_int,
-        module = "nautilus_trader.adapters.okx",
+        module = "nautilus_trader.core.nautilus_pyo3.okx",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -841,13 +838,10 @@ impl From<TriggerType> for OKXTriggerType {
 mod tests {
     use std::str::FromStr;
 
-    use nautilus_model::enums::{GreeksConvention, OptionKind, OrderStatus, OrderType};
+    use nautilus_model::enums::{GreeksConvention, OptionKind, OrderStatus};
     use rstest::rstest;
 
-    use super::{
-        OKXGreeksType, OKXOptionType, OKXOrderStatus, OKXOrderType, OKXRpiPermission,
-        OKXTriggerType,
-    };
+    use super::{OKXGreeksType, OKXOptionType, OKXOrderStatus, OKXOrderType, OKXTriggerType};
 
     #[rstest]
     fn test_okx_trigger_type_from_str_accepts_snake_case_values() {
@@ -914,35 +908,9 @@ mod tests {
 
     #[rstest]
     fn test_op_fok_converts_to_limit_order_type() {
+        use nautilus_model::enums::OrderType;
         let order_type: OrderType = OKXOrderType::OpFok.into();
         assert_eq!(order_type, OrderType::Limit);
-    }
-
-    #[rstest]
-    fn test_rpi_order_type_serializes_current_name_and_reads_legacy_alias() {
-        assert_eq!(
-            serde_json::to_string(&OKXOrderType::Rpi).unwrap(),
-            "\"rpi\""
-        );
-        assert_eq!(
-            serde_json::from_str::<OKXOrderType>("\"elp\"").unwrap(),
-            OKXOrderType::Rpi
-        );
-        assert_eq!(OrderType::from(OKXOrderType::Rpi), OrderType::Limit);
-    }
-
-    #[rstest]
-    #[case("\"0\"", OKXRpiPermission::Disabled)]
-    #[case("\"1\"", OKXRpiPermission::Enabled)]
-    #[case("\"2\"", OKXRpiPermission::Permitted)]
-    fn test_rpi_permission_deserializes_string_codes(
-        #[case] json: &str,
-        #[case] expected: OKXRpiPermission,
-    ) {
-        assert_eq!(
-            serde_json::from_str::<OKXRpiPermission>(json).unwrap(),
-            expected
-        );
     }
 
     #[rstest]
@@ -1010,37 +978,8 @@ pub enum OKXBookChannel {
     BookL2Tbt,
     /// Low-latency 50-depth channel (`books50-l2-tbt`).
     Books50L2Tbt,
-    /// Retail Price Improvement 400-depth channel (`books-rpi`).
-    BooksRpi,
     /// Spread 5-depth snapshot channel (`sprd-books5`).
     SprdBooks5,
-}
-
-/// Represents an account's RPI permission for an instrument.
-#[derive(
-    Copy,
-    Clone,
-    Debug,
-    Display,
-    PartialEq,
-    Eq,
-    Hash,
-    AsRefStr,
-    EnumIter,
-    EnumString,
-    Serialize,
-    Deserialize,
-)]
-pub enum OKXRpiPermission {
-    /// RPI is not enabled for the instrument.
-    #[serde(rename = "0")]
-    Disabled,
-    /// RPI is enabled, but the account cannot place RPI orders.
-    #[serde(rename = "1")]
-    Enabled,
-    /// RPI is enabled and the account can place RPI orders.
-    #[serde(rename = "2")]
-    Permitted,
 }
 
 /// Represents OKX VIP level tiers for trading fee structure and API limits.
@@ -1075,7 +1014,7 @@ pub enum OKXRpiPermission {
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(
-        module = "nautilus_trader.adapters.okx",
+        module = "nautilus_trader.core.nautilus_pyo3.okx",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -1207,7 +1146,6 @@ impl From<OKXOrderType> for OrderType {
         match ord_type {
             OKXOrderType::Market => Self::Market,
             OKXOrderType::Limit
-            | OKXOrderType::Rpi
             | OKXOrderType::PostOnly
             | OKXOrderType::OptimalLimitIoc
             | OKXOrderType::Mmp
@@ -1315,20 +1253,6 @@ pub fn conditional_order_to_algo_type(order_type: OrderType) -> anyhow::Result<O
     Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(
-    feature = "python",
-    pyo3::pyclass(
-        eq,
-        eq_int,
-        module = "nautilus_trader.adapters.okx",
-        from_py_object,
-        rename_all = "SCREAMING_SNAKE_CASE",
-    )
-)]
-#[cfg_attr(
-    feature = "python",
-    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.adapters.okx")
-)]
 pub enum OKXAlgoOrderStatus {
     Live,
     Pause,
@@ -1557,7 +1481,7 @@ pub enum OKXQuickMarginType {
     pyo3::pyclass(
         eq,
         eq_int,
-        module = "nautilus_trader.adapters.okx",
+        module = "nautilus_trader.core.nautilus_pyo3.okx",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )
@@ -1601,7 +1525,7 @@ pub enum OKXEnvironment {
     pyo3::pyclass(
         eq,
         eq_int,
-        module = "nautilus_trader.adapters.okx",
+        module = "nautilus_trader.core.nautilus_pyo3.okx",
         from_py_object,
         rename_all = "SCREAMING_SNAKE_CASE",
     )

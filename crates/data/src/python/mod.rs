@@ -20,7 +20,7 @@ pub mod option_chain_manager;
 
 use pyo3::prelude::*;
 
-/// Exposed through `nautilus_trader.data`.
+/// Loaded as `nautilus_pyo3.data`.
 ///
 /// # Errors
 ///

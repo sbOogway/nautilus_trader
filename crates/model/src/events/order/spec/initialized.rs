@@ -24,7 +24,6 @@ use crate::{
     identifiers::{
         ClientOrderId, ExecAlgorithmId, InstrumentId, OrderListId, StrategyId, TraderId,
     },
-    orders::OrderError,
     stubs::{TestDefault, test_uuid},
     types::{Price, Quantity},
 };
@@ -32,7 +31,7 @@ use crate::{
 /// Test-only fluent spec for [`OrderInitialized`].
 ///
 /// All fields carry sensible defaults so callers only set what differs.
-/// `build()` constructs the event through [`OrderInitialized::new_checked`] so any future invariants
+/// `build()` constructs the event through [`OrderInitialized::new`] so any future invariants
 /// added to the production constructor are exercised by tests built on this spec.
 #[derive(Debug, Clone, bon::Builder)]
 #[builder(finish_fn = into_spec)]
@@ -94,24 +93,10 @@ pub struct OrderInitializedSpec {
 
 impl<S: order_initialized_spec_builder::IsComplete> OrderInitializedSpecBuilder<S> {
     /// Builds the spec and constructs an [`OrderInitialized`] through its production constructor.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the order metadata violates an invariant.
     #[must_use]
     pub fn build(self) -> OrderInitialized {
-        self.build_checked()
-            .unwrap_or_else(|e| panic!("Failed to build OrderInitialized: {e}"))
-    }
-
-    /// Builds the spec and validates the resulting [`OrderInitialized`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the order metadata violates an invariant.
-    pub fn build_checked(self) -> Result<OrderInitialized, OrderError> {
         let spec = self.into_spec();
-        OrderInitialized::new_checked(
+        OrderInitialized::new(
             spec.trader_id,
             spec.strategy_id,
             spec.instrument_id,
@@ -152,7 +137,6 @@ impl<S: order_initialized_spec_builder::IsComplete> OrderInitializedSpecBuilder<
 
 #[cfg(test)]
 mod tests {
-    use nautilus_core::correctness::CorrectnessError;
     use rstest::rstest;
 
     use super::*;
@@ -213,43 +197,6 @@ mod tests {
         assert_eq!(order.price, Some(Price::from("1.25000")));
         assert!(order.post_only);
         assert_eq!(order.trader_id, TraderId::test_default());
-    }
-
-    #[rstest]
-    #[case(None)]
-    #[case(Some(Vec::new()))]
-    fn rejects_contingent_orders_without_linked_order_ids(
-        #[case] linked_order_ids: Option<Vec<ClientOrderId>>,
-    ) {
-        let result = OrderInitializedSpec::builder()
-            .contingency_type(ContingencyType::Oco)
-            .maybe_linked_order_ids(linked_order_ids)
-            .build_checked();
-
-        let Err(OrderError::Invariant(CorrectnessError::PredicateViolation { message })) = result
-        else {
-            panic!("expected a predicate violation, was {result:?}");
-        };
-        assert_eq!(
-            message,
-            "`linked_order_ids` is required for contingent orders"
-        );
-    }
-
-    #[rstest]
-    fn rejects_exec_algorithm_without_exec_spawn_id() {
-        let result = OrderInitializedSpec::builder()
-            .exec_algorithm_id(ExecAlgorithmId::from("TWAP"))
-            .build_checked();
-
-        let Err(OrderError::Invariant(CorrectnessError::PredicateViolation { message })) = result
-        else {
-            panic!("expected a predicate violation, was {result:?}");
-        };
-        assert_eq!(
-            message,
-            "`exec_spawn_id` is required when `exec_algorithm_id` is set"
-        );
     }
 
     #[rstest]

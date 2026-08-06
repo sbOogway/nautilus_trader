@@ -36,7 +36,7 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.model", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -88,9 +88,9 @@ pub struct OrderSnapshot {
     /// The order liquidity side.
     pub liquidity_side: Option<LiquiditySide>,
     /// The order average fill price.
-    pub avg_px: Option<Decimal>,
+    pub avg_px: Option<f64>,
     /// The order total price slippage.
-    pub slippage: Option<Decimal>,
+    pub slippage: Option<f64>,
     /// The commissions for the order.
     pub commissions: Vec<Money>,
     /// The order status.
@@ -187,8 +187,6 @@ impl From<OrderAny> for OrderSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use rstest::rstest;
 
     use super::*;
@@ -218,47 +216,6 @@ mod tests {
         assert_eq!(snapshot.filled_qty, order.filled_qty());
         assert!(!snapshot.is_post_only);
         assert!(!snapshot.is_quote_quantity);
-    }
-
-    #[rstest]
-    fn test_snapshot_serde_round_trip_keeps_avg_px_and_slippage_exact() {
-        let order = OrderTestBuilder::new(OrderType::Market)
-            .instrument_id(InstrumentId::from("EURUSD.SIM"))
-            .side(OrderSide::Buy)
-            .quantity(Quantity::from(100))
-            .build();
-        let mut snapshot = OrderSnapshot::from(order);
-        snapshot.avg_px = Some(Decimal::from_str("1.6666666666666666666666666667").unwrap());
-        snapshot.slippage = Some(Decimal::from_str("0.0000000000000000000000000001").unwrap());
-
-        let json = serde_json::to_value(&snapshot).unwrap();
-        let decoded: OrderSnapshot = serde_json::from_value(json.clone()).unwrap();
-
-        // Serialized as strings, so the payload itself cannot round through a float
-        assert_eq!(json["avg_px"], "1.6666666666666666666666666667");
-        assert_eq!(json["slippage"], "0.0000000000000000000000000001");
-        assert_eq!(decoded, snapshot);
-    }
-
-    #[rstest]
-    fn test_snapshot_deserializes_legacy_float_avg_px_and_slippage() {
-        // v1 order state reaches this type through `cache/transformers.py`, which hands
-        // `from_dict` the JSON floats its Cython orders carry.
-        let order = OrderTestBuilder::new(OrderType::Market)
-            .instrument_id(InstrumentId::from("EURUSD.SIM"))
-            .side(OrderSide::Buy)
-            .quantity(Quantity::from(100))
-            .build();
-        let mut snapshot = OrderSnapshot::from(order);
-        snapshot.avg_px = Some(Decimal::from_str("1.07").unwrap());
-        snapshot.slippage = Some(Decimal::from_str("0.07").unwrap());
-
-        let mut json = serde_json::to_value(&snapshot).unwrap();
-        json["avg_px"] = serde_json::json!(1.07);
-        json["slippage"] = serde_json::json!(0.07);
-        let decoded: OrderSnapshot = serde_json::from_value(json).unwrap();
-
-        assert_eq!(decoded, snapshot);
     }
 
     #[rstest]

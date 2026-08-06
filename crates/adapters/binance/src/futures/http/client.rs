@@ -24,8 +24,8 @@ use std::{
 
 use ahash::AHashMap;
 use aws_lc_rs::digest;
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use jiff::Timestamp;
 use nautilus_common::cache::InstrumentLookupError;
 use nautilus_core::{
     consts::NAUTILUS_USER_AGENT, datetime::SECONDS_IN_DAY, nanos::UnixNanos, time::AtomicTime,
@@ -95,7 +95,7 @@ use crate::{
         instruments::BinanceInstrumentSelector,
         models::BinanceErrorResponse,
         parse::{
-            parse_coinm_instrument_with_fees, parse_millis, parse_required_price_at_precision,
+            parse_coinm_instrument_with_fees, parse_required_price_at_precision,
             parse_required_quantity_at_precision, parse_usdm_instrument_with_fees,
         },
         symbol::{format_binance_symbol, format_instrument_id},
@@ -487,7 +487,7 @@ impl BinanceRawFuturesHttpClient {
             .map_err(|e| BinanceFuturesHttpError::ValidationError(e.to_string()))?;
 
         let encoded_batch = Self::percent_encode(&batch_json);
-        let timestamp = Timestamp::now().as_millisecond();
+        let timestamp = Utc::now().timestamp_millis();
         let mut query = format!("batchOrders={encoded_batch}&timestamp={timestamp}");
 
         if let Some(recv_window) = self.recv_window {
@@ -576,7 +576,7 @@ impl BinanceRawFuturesHttpClient {
                 query.push('&');
             }
 
-            let timestamp = Timestamp::now().as_millisecond();
+            let timestamp = Utc::now().timestamp_millis();
             query.push_str(&format!("timestamp={timestamp}"));
 
             if let Some(recv_window) = self.recv_window {
@@ -2923,12 +2923,11 @@ impl BinanceFuturesHttpClient {
     pub async fn request_agg_trades(
         &self,
         instrument_id: InstrumentId,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<TradeTick>> {
-        let cutoff =
-            self.clock.get_time_ns().to_datetime_utc() - jiff::SignedDuration::from_hours(24);
+        let cutoff = self.clock.get_time_ns().to_datetime_utc() - chrono::Duration::hours(24);
         anyhow::ensure!(
             start.as_ref().is_none_or(|value| value >= &cutoff)
                 && end.as_ref().is_none_or(|value| value >= &cutoff),
@@ -2939,15 +2938,15 @@ impl BinanceFuturesHttpClient {
         let params = BinanceAggTradesParams {
             symbol,
             from_id: None,
-            start_time: start.map(|value| value.as_millisecond()),
-            end_time: end.map(|value| value.as_millisecond()),
+            start_time: start.map(|value| value.timestamp_millis()),
+            end_time: end.map(|value| value.timestamp_millis()),
             limit,
         };
         let trades = self.inner.agg_trades(&params).await?;
         trades
             .iter()
             .map(|trade| {
-                let ts_init = parse_millis(trade.time, "Futures aggregate trade time")?;
+                let ts_init = UnixNanos::from_millis(trade.time as u64);
                 parse_futures_agg_trade_tick(
                     trade,
                     instrument_id,
@@ -2968,8 +2967,8 @@ impl BinanceFuturesHttpClient {
     pub async fn request_binance_bars(
         &self,
         bar_type: BarType,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<BinanceBar>> {
         anyhow::ensure!(
@@ -2998,8 +2997,8 @@ impl BinanceFuturesHttpClient {
         let params = BinanceKlinesParams {
             symbol,
             interval,
-            start_time: start.map(|dt| dt.as_millisecond()),
-            end_time: end.map(|dt| dt.as_millisecond()),
+            start_time: start.map(|dt| dt.timestamp_millis()),
+            end_time: end.map(|dt| dt.timestamp_millis()),
             limit,
         };
 
@@ -3008,7 +3007,7 @@ impl BinanceFuturesHttpClient {
 
         let mut result = Vec::with_capacity(klines.len());
         for kline in klines {
-            let ts_init = parse_millis(kline.close_time, "Futures kline close time")?;
+            let ts_init = UnixNanos::from_millis(kline.close_time as u64);
             let bar = parse_futures_kline_binance_bar(
                 &kline,
                 bar_type,
@@ -3033,8 +3032,8 @@ impl BinanceFuturesHttpClient {
     pub async fn request_bars(
         &self,
         bar_type: BarType,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<Bar>> {
         Ok(self
@@ -3120,14 +3119,14 @@ impl BinanceFuturesHttpClient {
     pub async fn request_funding_rates(
         &self,
         instrument_id: InstrumentId,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<FundingRateUpdate>> {
         let params = BinanceFundingRateParams {
             symbol: Some(format_binance_symbol(&instrument_id)),
-            start_time: start.map(|dt| dt.as_millisecond()),
-            end_time: end.map(|dt| dt.as_millisecond()),
+            start_time: start.map(|dt| dt.timestamp_millis()),
+            end_time: end.map(|dt| dt.timestamp_millis()),
             limit,
         };
 
@@ -3158,7 +3157,7 @@ fn parse_futures_trade_tick(
         .map_err(|e| anyhow::anyhow!("invalid Futures trade id {}: {e}", trade.id))?;
     let size = parse_required_quantity_at_precision(&trade.qty, size_precision, "trade.qty")
         .map_err(|e| anyhow::anyhow!("invalid Futures trade id {}: {e}", trade.id))?;
-    let ts_event = parse_millis(trade.time, "Futures trade time")?;
+    let ts_event = UnixNanos::from_millis(trade.time as u64);
 
     let aggressor_side = if trade.is_buyer_maker {
         AggressorSide::Seller
@@ -3219,7 +3218,7 @@ fn parse_futures_kline_binance_bar(
     let volume =
         parse_required_quantity_at_precision(&kline.volume, size_precision, "kline.volume")
             .map_err(|e| anyhow::anyhow!("invalid Futures kline {}: {e}", kline.open_time))?;
-    let ts_event = parse_millis(kline.close_time, "Futures kline close time")?;
+    let ts_event = UnixNanos::from_millis(kline.close_time as u64);
 
     let quote_volume = kline.quote_volume.parse::<Decimal>().map_err(|e| {
         anyhow::anyhow!(
@@ -3276,7 +3275,7 @@ fn parse_futures_funding_rate_update(
     let funding_rate = rate.funding_rate.parse::<Decimal>().map_err(|e| {
         anyhow::anyhow!("invalid Futures funding rate at {}: {e}", rate.funding_time)
     })?;
-    let ts_event = parse_millis(rate.funding_time, "Futures funding time")?;
+    let ts_event = UnixNanos::from_millis(rate.funding_time as u64);
 
     Ok(FundingRateUpdate::new(
         instrument_id,
@@ -3716,8 +3715,8 @@ mod tests {
         #[case] include_end: bool,
     ) {
         let client = create_test_client();
-        let start = Timestamp::now() - jiff::SignedDuration::from_hours(25);
-        let end = start + jiff::SignedDuration::from_mins(30);
+        let start = Utc::now() - chrono::Duration::hours(25);
+        let end = start + chrono::Duration::minutes(30);
 
         let error = client
             .request_agg_trades(

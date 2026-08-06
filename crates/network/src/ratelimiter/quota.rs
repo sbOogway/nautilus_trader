@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::{num::NonZeroU32, time::Duration};
+use std::{num::NonZeroU32, prelude::v1::*, time::Duration};
 
 use super::nanos::Nanos;
 
@@ -40,6 +40,14 @@ use super::nanos::Nanos;
 /// In other words, the burst size is the maximum number of cells that the rate limiter will ever
 /// allow through without replenishing them.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.network", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.network")
+)]
 pub struct Quota {
     pub(crate) max_burst: NonZeroU32,
     pub(crate) replenish_1_per: Duration,
@@ -47,7 +55,7 @@ pub struct Quota {
 
 /// Constructors for Quotas
 impl Quota {
-    /// Constructs a quota for a number of cells per second. The given number of cells is also
+    /// Construct a quota for a number of cells per second. The given number of cells is also
     /// assumed to be the maximum burst size.
     ///
     /// Returns `None` if `max_burst` is so large that the replenish interval rounds to zero
@@ -64,8 +72,8 @@ impl Quota {
         })
     }
 
-    /// Constructs a quota for a number of cells per 60‑second period. The given number of cells
-    /// is also assumed to be the maximum burst size.
+    /// Construct a quota for a number of cells per 60-second period. The given number of cells is
+    /// also assumed to be the maximum burst size.
     #[must_use]
     pub const fn per_minute(max_burst: NonZeroU32) -> Self {
         let replenish_interval_ns = Duration::from_mins(1).as_nanos() / (max_burst.get() as u128);
@@ -75,8 +83,8 @@ impl Quota {
         }
     }
 
-    /// Constructs a quota for a number of cells per 60‑minute period. The given number of cells
-    /// is also assumed to be the maximum burst size.
+    /// Construct a quota for a number of cells per 60-minute (3600-second) period. The given number
+    /// of cells is also assumed to be the maximum burst size.
     #[must_use]
     pub const fn per_hour(max_burst: NonZeroU32) -> Self {
         let replenish_interval_ns = Duration::from_hours(1).as_nanos() / (max_burst.get() as u128);
@@ -86,7 +94,7 @@ impl Quota {
         }
     }
 
-    /// Constructs a quota that replenishes one cell in a given interval.
+    /// Construct a quota that replenishes one cell in a given interval.
     ///
     /// If the time interval is zero, returns `None`.
     #[must_use]
@@ -125,11 +133,10 @@ impl Quota {
     }
 
     /// The time it takes to replenish the entire maximum burst size.
-    ///
-    /// Saturates at [`Duration::MAX`] if the full duration cannot be represented.
     #[must_use]
     pub const fn burst_size_replenished_in(&self) -> Duration {
-        self.replenish_1_per.saturating_mul(self.max_burst.get())
+        let fill_in_ns = self.replenish_1_per.as_nanos() * self.max_burst.get() as u128;
+        Duration::from_nanos(fill_in_ns as u64)
     }
 }
 
@@ -170,3 +177,32 @@ impl Quota {
         }
     }
 }
+
+// #[cfg(test)]
+// mod test {
+//     use nonzero_ext::nonzero;
+
+//     use super::*;
+//     use rstest::rstest;
+
+//     #[rstest]
+//     fn time_multiples() {
+//         let hourly = Quota::per_hour(nonzero!(1u32));
+//         let minutely = Quota::per_minute(nonzero!(1u32));
+//         let secondly = Quota::per_second(nonzero!(1u32));
+
+//         assert_eq!(
+//             hourly.replenish_interval() / 60,
+//             minutely.replenish_interval()
+//         );
+//         assert_eq!(
+//             minutely.replenish_interval() / 60,
+//             secondly.replenish_interval()
+//         );
+//     }
+
+//     #[rstest]
+//     fn period_error_cases() {
+//         assert!(Quota::with_period(Duration::from_secs(0)).is_none());
+//     }
+// }

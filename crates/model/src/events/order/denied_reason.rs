@@ -262,7 +262,7 @@ pub enum OrderDeniedReason {
         /// The reason the order list is unsupported.
         detail: String,
     },
-    /// The order type is not supported.
+    /// The order type is not supported by the venue.
     #[error("UNSUPPORTED_ORDER_TYPE: {order_type}")]
     UnsupportedOrderType {
         /// The unsupported order type.
@@ -274,7 +274,7 @@ pub enum OrderDeniedReason {
         /// The reason the take-profit/stop-loss parameters are unsupported.
         detail: String,
     },
-    /// The order failed validation before submission.
+    /// The order failed adapter validation before submission.
     #[error("VALIDATION_FAILED: {detail}")]
     ValidationFailed {
         /// The validation failure detail.
@@ -356,11 +356,11 @@ impl OrderDeniedCode {
             Self::UnsupportedTimeInForce => "The order's time in force is not supported.",
             Self::InvalidClientOrderId => "The client order ID is invalid for the venue.",
             Self::UnsupportedOrderList => "The venue does not support the requested order list.",
-            Self::UnsupportedOrderType => "The order type is not supported.",
+            Self::UnsupportedOrderType => "The order type is not supported by the venue.",
             Self::UnsupportedTpSl => {
                 "The venue does not support the requested take‑profit/stop‑loss parameters."
             }
-            Self::ValidationFailed => "The order failed validation before submission.",
+            Self::ValidationFailed => "The order failed adapter validation before submission.",
             Self::StreamReconciling => {
                 "A post‑reconnect stream reconciliation is in progress; retry once it completes."
             }
@@ -694,21 +694,18 @@ mod tests {
             .iter()
             .map(|code| (format!("`{code}`"), code.description()))
             .collect();
-        // Width counts characters, matching the padding applied by `format!` and the
-        // column width the Markdown table hook normalizes to. Descriptions carry
-        // non-breaking hyphens, so byte length would over-pad the column.
         let code_w = rows
             .iter()
-            .map(|(code, _)| code.chars().count())
+            .map(|(code, _)| code.len())
             .max()
             .unwrap_or(0)
-            .max(CODE_HEADER.chars().count());
+            .max(CODE_HEADER.len());
         let desc_w = rows
             .iter()
-            .map(|(_, desc)| desc.chars().count())
+            .map(|(_, desc)| desc.len())
             .max()
             .unwrap_or(0)
-            .max(DESC_HEADER.chars().count());
+            .max(DESC_HEADER.len());
 
         let mut lines = vec![
             format!("| {CODE_HEADER:<code_w$} | {DESC_HEADER:<desc_w$} |"),

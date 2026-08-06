@@ -15,7 +15,8 @@ runs:
       if: >-
         github.event_name == 'push' &&
         (github.ref_name == 'develop' || github.ref_name == 'nightly' ||
-        github.ref_name == 'master' || github.ref_name == 'test-ci')
+        github.ref_name == 'master' || github.ref_name == 'test-ci' ||
+        github.ref_name == 'test-ci-v2')
       id: vars
       run: |
         if [ ! -d "./dist" ]; then
@@ -36,9 +37,10 @@ runs:
       if: >-
         github.event_name == 'push' &&
         (github.ref_name == 'develop' || github.ref_name == 'nightly' ||
-        github.ref_name == 'master' || github.ref_name == 'test-ci')
-      # Use wildcard to flatten dist/ prefix: path before first wildcard is stripped
+        github.ref_name == 'master' || github.ref_name == 'test-ci' ||
+        github.ref_name == 'test-ci-v2')
       # https://github.com/actions/upload-artifact
+      # Use wildcard to flatten dist/ prefix: path before first wildcard is stripped
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: ${{ env.ASSET_NAME }}

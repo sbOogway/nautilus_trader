@@ -69,8 +69,6 @@ mod serial_tests {
         RedisCacheConfig {
             host: Some("localhost".to_string()),
             port: Some(6379),
-            connection_timeout: 1,
-            number_of_retries: 0,
             ..Default::default()
         }
     }
@@ -94,13 +92,7 @@ mod serial_tests {
 
         let config = CacheConfig::default();
         let database =
-            RedisCacheDatabase::new(trader_id, instance_id, config, redis_cache_config())
-                .await
-                .map_err(|e| {
-                    std::io::Error::other(format!(
-                        "A running Redis service is required for this test: {e}"
-                    ))
-                })?;
+            RedisCacheDatabase::new(trader_id, instance_id, config, redis_cache_config()).await?;
 
         let adapter = RedisCacheDatabaseAdapter { database };
 

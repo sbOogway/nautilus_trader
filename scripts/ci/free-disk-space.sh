@@ -9,7 +9,6 @@
 # Usage: free-disk-space.sh [--android] [--dotnet] [--haskell]
 #                           [--large-packages] [--docker-images]
 #                           [--tool-cache] [--swap-storage] [--extra]
-#                           [--max-build]
 
 set -euo pipefail
 
@@ -21,7 +20,6 @@ docker_images=0
 tool_cache=0
 swap_storage=0
 extra=0
-max_build=0
 
 usage() {
   cat << 'USAGE'
@@ -38,9 +36,6 @@ All categories are opt-in:
   --extra           Remove further SDKs beyond the categories above
                     (swift, powershell, boost, chromium, chrome,
                     microsoft, julia)
-  --max-build       Remove build tools unused by NautilusTrader's Linux jobs
-                    (Miniconda, vcpkg, Linuxbrew, Java, Maven, Gradle,
-                    Kotlin, AWS CLI, global Node modules)
 USAGE
 }
 
@@ -54,7 +49,6 @@ for arg in "$@"; do
     --tool-cache) tool_cache=1 ;;
     --swap-storage) swap_storage=1 ;;
     --extra) extra=1 ;;
-    --max-build) max_build=1 ;;
     -h | --help)
       usage
       exit 0
@@ -71,51 +65,28 @@ report_disk() {
   df -h / || true
 }
 
-available_kb() {
-  df -Pk / | awk 'NR == 2 {print $4}'
-}
-
-report_saved() {
-  label=$1
-  before_kb=$2
-  after_kb=$(available_kb)
-  saved_mb=$(((after_kb - before_kb) / 1024))
-  echo "Freed ${saved_mb} MiB from ${label}"
-}
-
-remove_paths() {
-  label=$1
-  shift
-  before_kb=$(available_kb)
-
-  echo "Removing ${label}"
-  for path in "$@"; do
-    if [ -e "$path" ] || [ -L "$path" ]; then
-      sudo rm -rf "$path" || true
-    fi
-  done
-  report_saved "$label" "$before_kb"
-}
-
 echo "Disk usage before cleanup:"
 report_disk
 
 if [ "$android" -eq 1 ]; then
-  remove_paths "Android SDK" /usr/local/lib/android
+  echo "Removing Android SDK"
+  sudo rm -rf /usr/local/lib/android || true
 fi
 
 if [ "$dotnet" -eq 1 ]; then
-  remove_paths ".NET runtime" /usr/share/dotnet
+  echo "Removing .NET runtime"
+  sudo rm -rf /usr/share/dotnet || true
 fi
 
 if [ "$haskell" -eq 1 ]; then
-  remove_paths "Haskell toolchain" /opt/ghc /usr/local/.ghcup
+  echo "Removing Haskell toolchain"
+  sudo rm -rf /opt/ghc || true
+  sudo rm -rf /usr/local/.ghcup || true
 fi
 
 # Package names are matched as regexes by apt; on newer runner images many
 # of these are already absent, so failures are expected and suppressed.
 if [ "$large_packages" -eq 1 ]; then
-  before_kb=$(available_kb)
   echo "Removing large system packages"
   sudo apt-get remove -y '^aspnetcore-.*' || true
   sudo apt-get remove -y '^dotnet-.*' --fix-missing || true
@@ -130,34 +101,31 @@ if [ "$large_packages" -eq 1 ]; then
   sudo apt-get remove -y google-cloud-cli --fix-missing || true
   sudo apt-get autoremove -y || true
   sudo apt-get clean || true
-  report_saved "large system packages" "$before_kb"
 fi
 
 if [ "$docker_images" -eq 1 ]; then
-  before_kb=$(available_kb)
   echo "Pruning Docker images"
   if sudo docker info > /dev/null 2>&1; then
     sudo docker image prune --all --force || true
   else
     echo "Docker daemon unavailable; skipping image prune"
   fi
-  report_saved "Docker images" "$before_kb"
 fi
 
 if [ "$tool_cache" -eq 1 ]; then
-  remove_paths "actions tool cache" "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
+  echo "Removing actions tool cache"
+  sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
 fi
 
 if [ "$swap_storage" -eq 1 ]; then
-  before_kb=$(available_kb)
   echo "Disabling swap storage"
   sudo swapoff -a || true
   sudo rm -f /mnt/swapfile || true
-  report_saved "swap storage" "$before_kb"
 fi
 
 if [ "$extra" -eq 1 ]; then
-  remove_paths "additional SDKs" \
+  echo "Removing additional SDKs"
+  for path in \
     /usr/share/swift \
     /usr/local/lib/swift \
     /usr/local/share/powershell \
@@ -165,22 +133,9 @@ if [ "$extra" -eq 1 ]; then
     /usr/local/share/chromium \
     /opt/google/chrome \
     /opt/microsoft \
-    /usr/local/julia*
-fi
-
-if [ "$max_build" -eq 1 ]; then
-  remove_paths "unused package managers" \
-    /usr/share/miniconda \
-    /usr/local/share/vcpkg \
-    /home/linuxbrew/.linuxbrew
-  remove_paths "unused JVM build tools" \
-    /usr/lib/jvm/temurin-*-jdk-* \
-    /usr/share/apache-maven-* \
-    /usr/share/gradle-* \
-    /usr/share/kotlinc
-  remove_paths "unused cloud and Node tooling" \
-    /usr/local/aws-cli \
-    /usr/local/lib/node_modules
+    /usr/local/julia*; do
+    sudo rm -rf "$path" || true
+  done
 fi
 
 echo "Disk usage after cleanup:"

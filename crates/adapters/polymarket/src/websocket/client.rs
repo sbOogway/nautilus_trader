@@ -23,10 +23,9 @@ use std::sync::{
 use nautilus_common::live::get_runtime;
 use nautilus_network::{
     mode::ConnectionMode,
-    ratelimiter::RateLimiter,
     websocket::{
         AuthTracker, SubscriptionState, TransportBackend, WebSocketClient, WebSocketConfig,
-        channel_epoch_message_handler, proxy::ProxyUrl,
+        channel_message_handler, proxy::ProxyUrl,
     },
 };
 
@@ -111,7 +110,6 @@ pub struct PolymarketWebSocketClient {
     out_rx: Option<tokio::sync::mpsc::UnboundedReceiver<PolymarketWsMessage>>,
     credential: Option<Credential>,
     subscriptions: SubscriptionState,
-    discovery_subscribed: Arc<AtomicBool>,
     auth_tracker: AuthTracker,
     // Survives disconnect() so that connect() can replay a prior subscribe_user() call.
     // Arc<AtomicBool> allows mutation from &self in subscribe_user().
@@ -203,7 +201,6 @@ impl PolymarketWebSocketClient {
             out_rx: None,
             credential,
             subscriptions: SubscriptionState::new(':'),
-            discovery_subscribed: Arc::new(AtomicBool::new(false)),
             auth_tracker: AuthTracker::new(),
             user_subscribed: Arc::new(AtomicBool::new(false)),
             task_handle: None,
@@ -229,17 +226,11 @@ impl PolymarketWebSocketClient {
             return Ok(());
         }
 
-        let (message_handler, raw_rx) = channel_epoch_message_handler();
+        let (message_handler, raw_rx) = channel_message_handler();
         let cfg = self.websocket_config();
 
-        let client = WebSocketClient::connect_with_rate_limiter_and_epoch_handler(
-            cfg,
-            message_handler,
-            None,
-            Arc::new(RateLimiter::new_with_quota(None, vec![])),
-        )
-        .await?;
-        let connection_epoch = client.connection_epoch();
+        let client =
+            WebSocketClient::connect(cfg, Some(message_handler), None, None, vec![], None).await?;
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HandlerCommand>();
         let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<PolymarketWsMessage>();
@@ -252,20 +243,24 @@ impl PolymarketWebSocketClient {
 
         log::debug!("Polymarket WebSocket connected: {}", self.url);
 
+        cmd_tx
+            .send(HandlerCommand::SetClient(client))
+            .map_err(|e| anyhow::anyhow!("Failed to send SetClient: {e}"))?;
+
         // Replay retained state onto the new session. Unlike the RECONNECTED sentinel
-        // path, a fresh connect() never fires resubscribe_all() inside the handler.
-        let initial_market_replay = match self.channel {
+        // path, a fresh connect() never fires resubscribe_all() inside the handler, so
+        // we must queue the commands here before the handler task is even spawned.
+        match self.channel {
             WsChannel::Market => {
                 let topics = self.subscriptions.all_topics();
-                if !topics.is_empty() || self.discovery_subscribed.load(Ordering::Relaxed) {
+                if !topics.is_empty() {
                     log::debug!(
-                        "Replaying market subscription state onto new session: assets={}, discovery={}",
-                        topics.len(),
-                        self.discovery_subscribed.load(Ordering::Relaxed),
+                        "Replaying {} market subscription(s) onto new session",
+                        topics.len()
                     );
-                    Some((topics, connection_epoch))
-                } else {
-                    None
+                    cmd_tx
+                        .send(HandlerCommand::SubscribeMarket(topics))
+                        .map_err(|e| anyhow::anyhow!("Failed to replay SubscribeMarket: {e}"))?;
                 }
             }
             WsChannel::User => {
@@ -275,15 +270,13 @@ impl PolymarketWebSocketClient {
                         .send(HandlerCommand::SubscribeUser)
                         .map_err(|e| anyhow::anyhow!("Failed to replay SubscribeUser: {e}"))?;
                 }
-                None
             }
-        };
+        }
 
         let signal = Arc::clone(&self.signal);
         let channel = self.channel;
         let credential = self.credential.clone();
         let subscriptions = self.subscriptions.clone();
-        let discovery_subscribed = Arc::clone(&self.discovery_subscribed);
         let auth_tracker = self.auth_tracker.clone();
         let user_subscribed = self.user_subscribed.load(Ordering::Relaxed);
         let subscribe_new_markets = self.subscribe_new_markets;
@@ -292,14 +285,11 @@ impl PolymarketWebSocketClient {
             let mut handler = FeedHandler::new(
                 signal,
                 channel,
-                Some(client),
                 cmd_rx,
                 raw_rx,
                 out_tx,
                 credential,
                 subscriptions,
-                discovery_subscribed,
-                initial_market_replay,
                 auth_tracker,
                 user_subscribed,
                 subscribe_new_markets,
@@ -432,7 +422,6 @@ impl PolymarketWebSocketClient {
     /// clean slate rather than replaying a previous generation's topics.
     pub(crate) fn clear_reconnect_state(&self) {
         self.subscriptions.clear();
-        self.discovery_subscribed.store(false, Ordering::Relaxed);
         self.user_subscribed.store(false, Ordering::Relaxed);
         self.auth_tracker.invalidate();
     }

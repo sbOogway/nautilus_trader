@@ -59,7 +59,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::fixed::{
     FIXED_PRECISION, FIXED_SCALAR, check_fixed_precision, mantissa_exponent_to_fixed_i128,
-    mantissa_exponent_to_raw_checked, raw_scales_match, scaled_raw_to_decimal,
+    mantissa_exponent_to_raw_checked, raw_scales_match,
 };
 #[cfg(feature = "high-precision")]
 use super::fixed::{PRECISION_DIFF_SCALAR, f64_to_fixed_i128, fixed_i128_to_f64};
@@ -139,8 +139,7 @@ pub const PRICE_MIN: f64 = -9_223_372_036.0;
 
 // -----------------------------------------------------------------------------
 
-/// The sentinel `Price` representing an error, returned by C FFI functions that
-/// cannot signal errors through `Option` or `Result`.
+/// The sentinel `Price` representing errors (this will be removed when Cython is gone).
 pub const ERROR_PRICE: Price = Price {
     raw: 0,
     precision: 255,
@@ -160,7 +159,11 @@ pub const ERROR_PRICE: Price = Price {
 #[derive(Clone, Copy, Default, Eq)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.model", frozen, from_py_object)
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.model",
+        frozen,
+        from_py_object
+    )
 )]
 #[cfg_attr(
     feature = "python",
@@ -445,7 +448,7 @@ impl Price {
             clippy::cast_lossless,
             reason = "cast is real when PriceRaw is i64, no-op when i128"
         )]
-        scaled_raw_to_decimal(rescaled_raw as i128, self.precision)
+        Decimal::from_i128_with_scale(rescaled_raw as i128, u32::from(self.precision))
     }
 
     /// Returns a formatted string representation of this instance.
@@ -1575,18 +1578,6 @@ mod tests {
     fn test_from_mantissa_exponent_zero() {
         let price = Price::from_mantissa_exponent(0, 2, 2);
         assert_eq!(price.as_f64(), 0.0);
-    }
-
-    #[cfg(feature = "high-precision")]
-    #[rstest]
-    #[case(PRICE_RAW_MAX, dec!(17014118346046))]
-    #[case(PRICE_RAW_MIN, dec!(-17014118346046))]
-    fn test_as_decimal_above_decimal_mantissa(#[case] raw: PriceRaw, #[case] expected: Decimal) {
-        // Regression: a precision-16 price above roughly 7.92e12 rescales to a raw value beyond
-        // `Decimal`'s 96-bit mantissa, which used to panic during conversion.
-        let price = Price::from_raw(raw, 16);
-
-        assert_eq!(price.as_decimal(), expected);
     }
 
     #[rstest]

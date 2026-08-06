@@ -20,7 +20,7 @@ use std::path::PathBuf;
 /// Returns the workspace root directory path.
 ///
 /// This is the directory containing the top-level `Cargo.toml` with the
-/// `[workspace]` section, typically where `python/` and `docs/` are located.
+/// `[workspace]` section, typically where `pyproject.toml` and `docs/` are located.
 ///
 /// # Panics
 ///
@@ -47,6 +47,12 @@ pub fn get_project_root_path() -> PathBuf {
     get_workspace_root_path()
 }
 
+/// Returns the tests root directory path.
+#[must_use]
+pub fn get_tests_root_path() -> PathBuf {
+    get_project_root_path().join("tests")
+}
+
 /// Returns the test data directory path.
 #[must_use]
 pub fn get_test_data_path() -> PathBuf {
@@ -55,7 +61,7 @@ pub fn get_test_data_path() -> PathBuf {
             .join(test_data_root_path)
             .join("test_data")
     } else {
-        get_project_root_path().join("test_data")
+        get_project_root_path().join("tests").join("test_data")
     }
 }
 
@@ -66,11 +72,11 @@ mod tests {
     use super::*;
 
     #[rstest]
-    fn test_workspace_root_contains_python_pyproject() {
+    fn test_workspace_root_contains_pyproject() {
         let root = get_workspace_root_path();
         assert!(
-            root.join("python/pyproject.toml").is_file(),
-            "Workspace root should contain python/pyproject.toml, was: {root:?}"
+            root.join("pyproject.toml").exists(),
+            "Workspace root should contain pyproject.toml, was: {root:?}"
         );
     }
 
@@ -89,11 +95,11 @@ mod tests {
     }
 
     #[rstest]
-    fn test_test_data_path_contains_checksum_manifest() {
-        let test_data = get_test_data_path();
+    fn test_tests_root_path() {
+        let tests_root = get_tests_root_path();
         assert!(
-            test_data.join("large/checksums.json").is_file(),
-            "Test data should contain the large-file checksum manifest, path: {test_data:?}"
+            tests_root.ends_with("tests"),
+            "Tests root should end with 'tests', was: {tests_root:?}"
         );
     }
 }

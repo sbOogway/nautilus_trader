@@ -17,7 +17,7 @@
 
 use std::{
     future::Future,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use futures_util::{StreamExt, pin_mut};
 use nautilus_common::{
     clients::ExecutionClient,
-    live::{get_runtime, runner::get_exec_event_sender, task::TaskHandles},
+    live::{get_runtime, runner::get_exec_event_sender},
     messages::execution::{
         BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
         GenerateFillReportsBuilder, GenerateOrderStatusReport, GenerateOrderStatusReports,
@@ -37,7 +37,7 @@ use nautilus_common::{
     },
 };
 use nautilus_core::{
-    UnixNanos,
+    MUTEX_POISONED, UnixNanos,
     env::get_or_env_var,
     time::{AtomicTime, get_atomic_clock_realtime},
 };
@@ -103,8 +103,7 @@ pub struct BybitExecutionClient {
     ws_trade: BybitWebSocketClient,
     ws_private_stream_handle: Option<JoinHandle<()>>,
     ws_trade_stream_handle: Option<JoinHandle<()>>,
-    repay_handle: Option<JoinHandle<()>>,
-    pending_tasks: TaskHandles,
+    pending_tasks: Mutex<Vec<JoinHandle<()>>>,
     instruments_cache: Arc<AHashMap<Ustr, InstrumentAny>>,
     dispatch_state: Arc<WsDispatchState>,
 }
@@ -179,8 +178,7 @@ impl BybitExecutionClient {
             ws_trade,
             ws_private_stream_handle: None,
             ws_trade_stream_handle: None,
-            repay_handle: None,
-            pending_tasks: TaskHandles::default(),
+            pending_tasks: Mutex::new(Vec::new()),
             instruments_cache: Arc::new(AHashMap::new()),
             dispatch_state: Arc::new(WsDispatchState::default()),
         })
@@ -220,11 +218,16 @@ impl BybitExecutionClient {
             }
         });
 
-        self.pending_tasks.push(handle);
+        let mut tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
+        tasks.retain(|handle| !handle.is_finished());
+        tasks.push(handle);
     }
 
     fn abort_pending_tasks(&self) {
-        self.pending_tasks.abort_all();
+        let mut tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
+        for handle in tasks.drain(..) {
+            handle.abort();
+        }
     }
 
     /// Polls the cache until the account is registered or timeout is reached.
@@ -689,18 +692,6 @@ impl ExecutionClient for BybitExecutionClient {
             }
         }
 
-        if self.config.auto_repay_spot_borrows && self.repay_handle.is_none() {
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-            self.dispatch_state.set_repay_sender(tx);
-
-            let http_client = self.http_client.clone();
-            let clock = self.clock;
-            let handle = get_runtime().spawn(async move {
-                crate::repay::run_spot_repay_consumer(rx, http_client, clock).await;
-            });
-            self.repay_handle = Some(handle);
-        }
-
         self.ws_private.subscribe_orders().await?;
         self.ws_private.subscribe_executions().await?;
         self.ws_private.subscribe_positions().await?;
@@ -750,12 +741,6 @@ impl ExecutionClient for BybitExecutionClient {
         }
 
         if let Some(handle) = self.ws_trade_stream_handle.take() {
-            handle.abort();
-        }
-
-        self.dispatch_state.clear_repay_sender();
-
-        if let Some(handle) = self.repay_handle.take() {
             handle.abort();
         }
 
@@ -887,13 +872,6 @@ impl ExecutionClient for BybitExecutionClient {
         if let Some(handle) = self.ws_trade_stream_handle.take() {
             handle.abort();
         }
-
-        self.dispatch_state.clear_repay_sender();
-
-        if let Some(handle) = self.repay_handle.take() {
-            handle.abort();
-        }
-
         self.abort_pending_tasks();
         log::info!("Stopped: client_id={}", self.core.client_id);
         Ok(())
@@ -2204,7 +2182,13 @@ mod tests {
 
     async fn wait_for_spawned_tasks(client: &BybitExecutionClient) {
         for _ in 0..20 {
-            if client.pending_tasks.all_finished() {
+            if client
+                .pending_tasks
+                .lock()
+                .expect(MUTEX_POISONED)
+                .iter()
+                .all(tokio::task::JoinHandle::is_finished)
+            {
                 return;
             }
 

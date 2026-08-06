@@ -174,7 +174,10 @@ pub static HYPERLIQUID_REST_QUOTA: LazyLock<Quota> =
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.hyperliquid", from_py_object)
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.hyperliquid",
+        from_py_object
+    )
 )]
 pub struct HyperliquidRawHttpClient {
     client: HttpClient,
@@ -870,7 +873,10 @@ impl HyperliquidRawHttpClient {
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.hyperliquid", from_py_object)
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.hyperliquid",
+        from_py_object
+    )
 )]
 #[cfg_attr(
     feature = "python",
@@ -2869,8 +2875,8 @@ impl HyperliquidHttpClient {
     pub async fn request_bars(
         &self,
         bar_type: BarType,
-        start: Option<jiff::Timestamp>,
-        end: Option<jiff::Timestamp>,
+        start: Option<chrono::DateTime<chrono::Utc>>,
+        end: Option<chrono::DateTime<chrono::Utc>>,
         limit: Option<u32>,
     ) -> Result<Vec<Bar>> {
         let instrument_id = bar_type.instrument_id();
@@ -2904,10 +2910,10 @@ impl HyperliquidHttpClient {
             bar_type_to_interval(&bar_type).map_err(|e| Error::bad_request(e.to_string()))?;
 
         // Hyperliquid uses millisecond timestamps
-        let now = jiff::Timestamp::now();
-        let end_time = end.unwrap_or(now).as_millisecond() as u64;
+        let now = chrono::Utc::now();
+        let end_time = end.unwrap_or(now).timestamp_millis() as u64;
         let start_time = if let Some(start) = start {
-            start.as_millisecond() as u64
+            start.timestamp_millis() as u64
         } else {
             // Default to 1000 bars before end_time
             let spec = bar_type.spec();
@@ -2927,7 +2933,7 @@ impl HyperliquidHttpClient {
             .await?;
 
         // Filter out incomplete bars where end_timestamp >= current time
-        let now_ms = now.as_millisecond() as u64;
+        let now_ms = now.timestamp_millis() as u64;
 
         let mut bars: Vec<Bar> = candles
             .iter()
@@ -2971,8 +2977,8 @@ impl HyperliquidHttpClient {
     pub async fn request_public_trades(
         &self,
         instrument_id: InstrumentId,
-        start: Option<jiff::Timestamp>,
-        end: Option<jiff::Timestamp>,
+        start: Option<chrono::DateTime<chrono::Utc>>,
+        end: Option<chrono::DateTime<chrono::Utc>>,
         limit: Option<usize>,
     ) -> Result<Vec<HyperliquidPublicTrade>> {
         let symbol = instrument_id.symbol;

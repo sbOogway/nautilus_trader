@@ -50,7 +50,7 @@ use crate::{
 #[derive(Clone, Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.model", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -279,12 +279,7 @@ impl OrderBook {
     /// Returns an error if:
     /// - The delta's instrument ID does not match this book's instrument ID.
     /// - An `Add` is given with `NoOrderSide` (either explicitly or because the cache lookup failed).
-    /// - An `Add` with `NoOrderSide` matches an order ID on both sides of the book.
     /// - After resolution the delta still has `NoOrderSide` but its action is not `Clear`.
-    ///
-    /// # Notes
-    ///
-    /// An ambiguous `NoOrderSide` `Update` or `Delete` is skipped with a warning.
     pub fn apply_delta(&mut self, delta: &OrderBookDelta) -> Result<(), BookIntegrityError> {
         if delta.instrument_id != self.instrument_id {
             return Err(BookIntegrityError::InstrumentMismatch(
@@ -306,12 +301,7 @@ impl OrderBook {
     ///
     /// Returns an error if:
     /// - An `Add` is given with `NoOrderSide` (either explicitly or because the cache lookup failed).
-    /// - An `Add` with `NoOrderSide` matches an order ID on both sides of the book.
     /// - After resolution the delta still has `NoOrderSide` but its action is not `Clear`.
-    ///
-    /// # Notes
-    ///
-    /// An ambiguous `NoOrderSide` `Update` or `Delete` is skipped with a warning.
     pub fn apply_delta_unchecked(
         &mut self,
         delta: &OrderBookDelta,
@@ -328,21 +318,6 @@ impl OrderBook {
                             // Already consistent
                             log::debug!(
                                 "Skipping {:?} for unknown order_id={order_id}",
-                                delta.action
-                            );
-                            return Ok(());
-                        }
-                        BookAction::Clear => {} // Won't hit this (order_id != 0)
-                    }
-                }
-                Err(BookIntegrityError::AmbiguousOrderSide(order_id)) => {
-                    match delta.action {
-                        BookAction::Add => {
-                            return Err(BookIntegrityError::AmbiguousOrderSide(order_id));
-                        }
-                        BookAction::Update | BookAction::Delete => {
-                            log::warn!(
-                                "Skipping {:?} for order_id={order_id} found on both book sides",
                                 delta.action
                             );
                             return Ok(());
@@ -568,27 +543,20 @@ impl OrderBook {
     }
 
     fn resolve_no_side_order(&self, mut order: BookOrder) -> Result<BookOrder, BookIntegrityError> {
-        let bid_price = self.bids.cache.get(&order.order_id);
-        let ask_price = self.asks.cache.get(&order.order_id);
+        let resolved_side = self
+            .bids
+            .cache
+            .get(&order.order_id)
+            .or_else(|| self.asks.cache.get(&order.order_id))
+            .map(|book_price| match book_price.side {
+                OrderSideSpecified::Buy => OrderSide::Buy,
+                OrderSideSpecified::Sell => OrderSide::Sell,
+            })
+            .ok_or(BookIntegrityError::OrderNotFoundForSideResolution(
+                order.order_id,
+            ))?;
 
-        // For L2 books the order ID is a pure price hash, so in a locked market the
-        // same ID exists on both sides and the side cannot be resolved safely.
-        let book_price = match (bid_price, ask_price) {
-            (Some(_), Some(_)) => {
-                return Err(BookIntegrityError::AmbiguousOrderSide(order.order_id));
-            }
-            (Some(book_price), None) | (None, Some(book_price)) => book_price,
-            (None, None) => {
-                return Err(BookIntegrityError::OrderNotFoundForSideResolution(
-                    order.order_id,
-                ));
-            }
-        };
-
-        order.side = match book_price.side {
-            OrderSideSpecified::Buy => OrderSide::Buy,
-            OrderSideSpecified::Sell => OrderSide::Sell,
-        };
+        order.side = resolved_side;
 
         Ok(order)
     }
@@ -642,13 +610,8 @@ impl OrderBook {
     /// Maps bid prices to total public size per level, excluding own orders up to a depth limit.
     ///
     /// With `own_book`, subtracts own order sizes, filtered by `status` if provided.
-    /// When `now` is provided, only subtracts orders whose acceptance time plus
-    /// `accepted_buffer_ns` is at or before `now`. When `now` is `None`, acceptance-time
-    /// filtering is disabled.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `own_book` is `Some`, `accepted_buffer_ns` is positive, and `now` is `None`.
+    /// Uses `accepted_buffer_ns` to include only orders accepted at least that many
+    /// nanoseconds before `now` (defaults to now).
     #[must_use]
     pub fn bids_filtered_as_map(
         &self,
@@ -676,13 +639,8 @@ impl OrderBook {
     /// Maps ask prices to total public size per level, excluding own orders up to a depth limit.
     ///
     /// With `own_book`, subtracts own order sizes, filtered by `status` if provided.
-    /// When `now` is provided, only subtracts orders whose acceptance time plus
-    /// `accepted_buffer_ns` is at or before `now`. When `now` is `None`, acceptance-time
-    /// filtering is disabled.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `own_book` is `Some`, `accepted_buffer_ns` is positive, and `now` is `None`.
+    /// Uses `accepted_buffer_ns` to include only orders accepted at least that many
+    /// nanoseconds before `now` (defaults to now).
     #[must_use]
     pub fn asks_filtered_as_map(
         &self,
@@ -712,7 +670,6 @@ impl OrderBook {
     /// # Panics
     ///
     /// Panics if `self` and `own_book` have different instrument IDs.
-    /// Panics if `own_book` is `Some`, `accepted_buffer_ns` is positive, and `now` is `None`.
     ///
     /// [`Self::filtered_view_checked`] for fallible construction.
     #[must_use]
@@ -737,7 +694,6 @@ impl OrderBook {
     ///
     /// # Panics
     ///
-    /// Panics if `own_book` is `Some`, `accepted_buffer_ns` is positive, and `now` is `None`.
     /// Panics if `Price::from_decimal` or `Quantity::from_decimal` fails when
     /// reconstructing filtered levels.
     pub fn filtered_view_checked(
@@ -807,13 +763,8 @@ impl OrderBook {
     /// Groups bid quantities into price buckets, truncating to a maximum depth, excluding own orders.
     ///
     /// With `own_book`, subtracts own order sizes, filtered by `status` if provided.
-    /// When `now` is provided, only subtracts orders whose acceptance time plus
-    /// `accepted_buffer_ns` is at or before `now`. When `now` is `None`, acceptance-time
-    /// filtering is disabled.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `own_book` is `Some`, `accepted_buffer_ns` is positive, and `now` is `None`.
+    /// Uses `accepted_buffer_ns` to include only orders accepted at least that many
+    /// nanoseconds before `now` (defaults to now).
     #[must_use]
     pub fn group_bids_filtered(
         &self,
@@ -839,13 +790,8 @@ impl OrderBook {
     /// Groups ask quantities into price buckets, truncating to a maximum depth, excluding own orders.
     ///
     /// With `own_book`, subtracts own order sizes, filtered by `status` if provided.
-    /// When `now` is provided, only subtracts orders whose acceptance time plus
-    /// `accepted_buffer_ns` is at or before `now`. When `now` is `None`, acceptance-time
-    /// filtering is disabled.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `own_book` is `Some`, `accepted_buffer_ns` is positive, and `now` is `None`.
+    /// Uses `accepted_buffer_ns` to include only orders accepted at least that many
+    /// nanoseconds before `now` (defaults to now).
     #[must_use]
     pub fn group_asks_filtered(
         &self,

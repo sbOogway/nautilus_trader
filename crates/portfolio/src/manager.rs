@@ -21,7 +21,7 @@ use ahash::AHashMap;
 use nautilus_common::{cache::Cache, clock::Clock};
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
-    accounts::{Account, AccountAny, BaseAccount, BettingAccount, CashAccount, MarginAccount},
+    accounts::{Account, AccountAny, BettingAccount, CashAccount, MarginAccount},
     enums::{AccountType, OrderSide, OrderType, PriceType},
     events::{AccountState, OrderFilled},
     identifiers::InstrumentId,
@@ -68,11 +68,7 @@ impl AccountsManager {
         instrument: &InstrumentAny,
         fill: &OrderFilled,
     ) -> (AccountAny, AccountState) {
-        // Snapshot only what the balance update can mutate: cloning the account would
-        // deep-copy its event log, which grows by one entry per fill.
-        let base = base_account(&account);
-        let original_balances = base.balances.clone();
-        let original_commissions = base.commissions.clone();
+        let original_account = account.clone();
         let position_id = if let Some(position_id) = fill.position_id {
             position_id
         } else {
@@ -121,12 +117,8 @@ impl AccountsManager {
         };
 
         if !updated {
-            let base = base_account_mut(&mut account);
-            base.balances = original_balances;
-            base.commissions = original_commissions;
-
-            let state = self.generate_account_state(&account, fill.ts_event);
-            return (account, state);
+            let state = self.generate_account_state(&original_account, fill.ts_event);
+            return (original_account, state);
         }
 
         let state = self.generate_account_state(&account, fill.ts_event);
@@ -961,7 +953,7 @@ impl AccountsManager {
                 // existing-currency branch above lets the per-account
                 // `update_balances` enforce the borrowing policy, so the two
                 // branches are intentionally asymmetric until cross-currency
-                // equity tracking is implemented.
+                // equity tracking lands (see TODO in `manager.pyx`).
                 if pnl.as_decimal() < Decimal::ZERO {
                     log::error!(
                         "Cannot complete transaction: no {currency} to deduct a {pnl} realized PnL from"
@@ -1165,22 +1157,6 @@ impl AccountsManager {
                 },
             ),
         }
-    }
-}
-
-fn base_account(account: &AccountAny) -> &BaseAccount {
-    match account {
-        AccountAny::Margin(margin) => margin,
-        AccountAny::Cash(cash) => cash,
-        AccountAny::Betting(betting) => betting,
-    }
-}
-
-fn base_account_mut(account: &mut AccountAny) -> &mut BaseAccount {
-    match account {
-        AccountAny::Margin(margin) => margin,
-        AccountAny::Cash(cash) => cash,
-        AccountAny::Betting(betting) => betting,
     }
 }
 
@@ -2606,76 +2582,6 @@ mod tests {
         assert_eq!(state.balances[0].currency, usd);
         assert_eq!(state.balances[0].total, expected);
         assert_eq!(state.balances[0].free, expected);
-    }
-
-    #[rstest]
-    fn test_update_balances_rollback_restores_balances_and_commissions() {
-        // Overflowing the commission total is the only reachable trigger for a rollback after
-        // the balance mutation: the realized PnL lands first, then the commission is rejected.
-        let usd = Currency::USD();
-        let account_state = AccountState::new(
-            AccountId::new("SIM-001"),
-            AccountType::Margin,
-            vec![AccountBalance::new(
-                Money::new(1_000_000.0, usd),
-                Money::zero(usd),
-                Money::new(1_000_000.0, usd),
-            )],
-            Vec::new(),
-            true,
-            UUID4::new(),
-            UnixNanos::default(),
-            UnixNanos::default(),
-            Some(usd),
-        );
-        let mut account = MarginAccount::new(account_state, false);
-        account.commissions.insert(usd, Money::new(MONEY_MAX, usd));
-        let original_balances = account.balances.clone();
-        let original_commissions = account.commissions.clone();
-
-        let clock = Rc::new(RefCell::new(TestClock::new()));
-        let cache = Rc::new(RefCell::new(Cache::new(None, None)));
-        let manager = AccountsManager::new(clock, cache.clone());
-        let instrument = audusd_sim();
-        let instrument_any = InstrumentAny::CurrencyPair(instrument.clone());
-
-        let entry = OrderFilledSpec::builder()
-            .instrument_id(instrument.id())
-            .order_side(OrderSide::Buy)
-            .last_qty(Quantity::from("100000"))
-            .last_px(Price::from("0.80000"))
-            .position_id(PositionId::new("P-ROLLBACK"))
-            .build();
-        let position = Position::new(&instrument_any, entry);
-        cache
-            .borrow_mut()
-            .add_position(&position, OmsType::Netting)
-            .unwrap();
-
-        // Closing fill realizes 1,000 USD, less a 20 USD commission the total cannot absorb
-        let closing = OrderFilledSpec::builder()
-            .instrument_id(instrument.id())
-            .order_side(OrderSide::Sell)
-            .last_qty(Quantity::from("100000"))
-            .last_px(Price::from("0.81000"))
-            .trade_id(TradeId::new("2"))
-            .ts_event(UnixNanos::from(1))
-            .ts_init(UnixNanos::from(1))
-            .position_id(PositionId::new("P-ROLLBACK"))
-            .commission(Money::new(20.0, usd))
-            .build();
-
-        let (updated, state) =
-            manager.update_balances(AccountAny::Margin(account), &instrument_any, &closing);
-
-        let AccountAny::Margin(margin) = updated else {
-            panic!("Expected MarginAccount");
-        };
-        assert_eq!(margin.balances, original_balances);
-        assert_eq!(margin.commissions, original_commissions);
-        assert_eq!(state.balances.len(), 1);
-        assert_eq!(state.balances[0].total, Money::new(1_000_000.0, usd));
-        assert_eq!(state.balances[0].free, Money::new(1_000_000.0, usd));
     }
 
     #[rstest]

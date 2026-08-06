@@ -18,13 +18,10 @@
 use std::str::FromStr;
 
 use anyhow::Context;
+use chrono::{DateTime, LocalResult, NaiveDateTime, Utc};
+use chrono_tz::Tz;
 use ibapi::orders::{Execution, OrderStatus};
-use jiff::{
-    Timestamp,
-    civil::DateTime,
-    tz::{AmbiguousOffset, Offset},
-};
-use nautilus_core::{UnixNanos, datetime::get_timezone};
+use nautilus_core::UnixNanos;
 use nautilus_model::{
     enums::{
         LiquiditySide, OrderSide, OrderStatus as NautilusOrderStatus, OrderType, TimeInForce,
@@ -287,7 +284,7 @@ pub fn parse_order_status_to_report(
     }
 
     if include_avg_px {
-        report = report.with_avg_px(decimal_from_f64(avg_px_value)?);
+        report = report.with_avg_px(avg_px_value)?;
     }
 
     Ok(report)
@@ -376,7 +373,7 @@ fn decimal_from_f64(value: f64) -> anyhow::Result<Decimal> {
 /// - "20230223 00:43:36" (assumed UTC)
 /// - "20250225-15:15:00" (assumed UTC)
 ///
-/// Timezones are resolved through Jiff's bundled IANA tz database, so any
+/// Timezones are resolved through the IANA tz database (via `chrono-tz`), so any
 /// region abbreviation or name that IB stamps the execution with (e.g. `MET`,
 /// `EST`, `America/New_York`) is honored, matching the v1 pandas-based parser.
 /// This matters because some IB accounts (e.g. European paper accounts) report a
@@ -393,10 +390,10 @@ pub fn parse_execution_time(time_str: &str) -> anyhow::Result<UnixNanos> {
     // Hyphenated, space-less form (e.g. "20250225-15:15:00") is always UTC.
     if !time_str.contains(' ') {
         let normalized = time_str.replace('-', " ");
-        let dt = DateTime::strptime(NAIVE_FORMAT, &normalized).map_err(|e| {
+        let dt = NaiveDateTime::parse_from_str(&normalized, NAIVE_FORMAT).map_err(|e| {
             anyhow::anyhow!("Failed to parse execution timestamp '{time_str}': {e}")
         })?;
-        return datetime_to_unix_nanos(Offset::UTC.to_timestamp(dt)?, time_str);
+        return datetime_to_unix_nanos(dt.and_utc(), time_str);
     }
 
     // Split into at most three parts: date, time, and optional timezone token.
@@ -409,11 +406,11 @@ pub fn parse_execution_time(time_str: &str) -> anyhow::Result<UnixNanos> {
     let tz_str = parts.next().unwrap_or("").trim();
 
     let naive_str = format!("{date} {time}");
-    let dt = DateTime::strptime(NAIVE_FORMAT, &naive_str)
+    let dt = NaiveDateTime::parse_from_str(&naive_str, NAIVE_FORMAT)
         .map_err(|e| anyhow::anyhow!("Failed to parse execution timestamp '{time_str}': {e}"))?;
 
     let utc = if tz_str.is_empty() {
-        Offset::UTC.to_timestamp(dt)?
+        dt.and_utc()
     } else {
         localize_with_zone(dt, tz_str, time_str)?
     };
@@ -424,33 +421,37 @@ pub fn parse_execution_time(time_str: &str) -> anyhow::Result<UnixNanos> {
 /// Localize a naive timestamp against an IB timezone token and convert to UTC.
 ///
 /// `Z` is normalized to `UTC`; everything else is resolved through the IANA tz
-/// database. Error and fold behavior is documented on [`parse_execution_time`].
-fn localize_with_zone(dt: DateTime, tz_str: &str, time_str: &str) -> anyhow::Result<Timestamp> {
+/// database via `chrono-tz`. Error and fold behavior is documented on [`parse_execution_time`].
+fn localize_with_zone(
+    dt: NaiveDateTime,
+    tz_str: &str,
+    time_str: &str,
+) -> anyhow::Result<DateTime<Utc>> {
     let tz_name = if tz_str.eq_ignore_ascii_case("Z") {
         "UTC"
     } else {
         tz_str
     };
 
-    let zone = get_timezone(tz_name).map_err(|_| {
-        anyhow::anyhow!(
+    match Tz::from_str(tz_name) {
+        Ok(zone) => match dt.and_local_timezone(zone) {
+            LocalResult::Single(local) => Ok(local.with_timezone(&Utc)),
+            // Fall-back fold: take the earliest instant (worst case ~1h skew).
+            LocalResult::Ambiguous(earliest, _) => Ok(earliest.with_timezone(&Utc)),
+            LocalResult::None => anyhow::bail!(
+                "Execution timestamp '{time_str}' is non-existent in timezone '{tz_str}'"
+            ),
+        },
+        Err(_) => anyhow::bail!(
             "Unrecognised execution timezone '{tz_str}' in '{time_str}'. Configure TWS / IB Gateway to emit a standard timezone (e.g. UTC)"
-        )
-    })?;
-    let ambiguous = zone.to_ambiguous_timestamp(dt);
-    match ambiguous.offset() {
-        AmbiguousOffset::Unambiguous { .. } => Ok(ambiguous.unambiguous()?),
-        // Fall-back fold: take the earliest instant (worst case ~1h skew).
-        AmbiguousOffset::Fold { .. } => Ok(ambiguous.earlier()?),
-        AmbiguousOffset::Gap { .. } => {
-            anyhow::bail!("Execution timestamp '{time_str}' is non-existent in timezone '{tz_str}'")
-        }
+        ),
     }
 }
 
-fn datetime_to_unix_nanos(dt: Timestamp, time_str: &str) -> anyhow::Result<UnixNanos> {
+fn datetime_to_unix_nanos(dt: DateTime<Utc>, time_str: &str) -> anyhow::Result<UnixNanos> {
     let nanos: u64 = dt
-        .as_nanosecond()
+        .timestamp_nanos_opt()
+        .ok_or_else(|| anyhow::anyhow!("Execution timestamp '{time_str}' was before Unix epoch"))?
         .try_into()
         .map_err(|_| anyhow::anyhow!("Execution timestamp '{time_str}' was before Unix epoch"))?;
     Ok(UnixNanos::new(nanos))

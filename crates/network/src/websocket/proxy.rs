@@ -13,18 +13,31 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! HTTP `CONNECT` tunneling for outbound WebSocket connections.
+//! Proxy support for outbound WebSocket connections.
 //!
-//! HTTP and HTTPS proxy URLs are supported. An HTTPS proxy adds TLS to the proxy hop; a `wss`
-//! target adds a separate TLS session after the tunnel is established. URL user information
-//! becomes Basic proxy authentication, and credential‑bearing values are redacted from `Debug`
-//! output.
+//! Implements HTTP `CONNECT` tunneling so a `WebSocketClient` can be reached
+//! through an HTTP or HTTPS forward proxy. The same `proxy_url` field is used
+//! by the HTTP client (via `reqwest::Proxy::all`), keeping a single config
+//! field for both transports.
 //!
-//! The tunnel accepts only a `2xx` response and bounds response headers before parsing. It returns
-//! a stream positioned for the WebSocket handshake rather than performing that handshake itself.
+//! `socks5://` / `socks5h://` URLs are recognized but not yet implemented
+//! for the WebSocket path. The dispatcher logs a warning and falls back to
+//! a direct connection so that REST configs that already point at a SOCKS
+//! proxy keep working unchanged. SOCKS support requires the optional
+//! `tokio-socks` crate, which is not yet a workspace dependency.
 //!
-//! SOCKS URLs are recognized but not tunneled: the client logs a warning and connects directly.
-//! Selecting the Sockudo backend with a proxy instead routes the connection through Tungstenite.
+//! The tunnel is established as follows:
+//! 1. TCP connect to the proxy host / port.
+//! 2. If the proxy URL scheme is `https`, layer TLS using the proxy host as
+//!    the SNI and certificate domain.
+//! 3. Send `CONNECT target_host:target_port HTTP/1.1` plus the matching
+//!    `Host:` header (and optional `Proxy-Authorization:` derived from the
+//!    proxy URL user-info).
+//! 4. Read the response line and headers; require a `2xx` status.
+//! 5. If the upstream WebSocket scheme is `wss`, layer a second TLS session
+//!    using the upstream host name.
+//! 6. Hand the resulting stream to `tokio-tungstenite`'s `client_async` so the
+//!    WebSocket handshake completes over the tunnel.
 
 use std::fmt::Debug;
 
@@ -109,7 +122,7 @@ pub struct WsTarget {
 }
 
 impl WsTarget {
-    /// Parses a `ws://` or `wss://` URL into the host, port, and TLS components.
+    /// Parse a `ws://` or `wss://` URL into the host/port/TLS components.
     ///
     /// # Errors
     ///
@@ -165,7 +178,7 @@ pub enum ProxyKind {
 }
 
 impl ProxyKind {
-    /// Parses a proxy URL into a [`ProxyKind`]. Returns
+    /// Parse a proxy URL into a [`ProxyKind`]. Returns
     /// [`TransportError::InvalidUrl`] for malformed input or non-proxy
     /// schemes (`ftp://`, `ws://`, etc.).
     ///
@@ -226,7 +239,7 @@ impl Debug for ProxyTarget {
 }
 
 impl ProxyTarget {
-    /// Parses a proxy URL into the components needed to establish the tunnel.
+    /// Parse a proxy URL into the components needed to establish the tunnel.
     ///
     /// Only `http://` and `https://` schemes are accepted here. Use
     /// [`ProxyKind::parse`] when callers need to distinguish recognised but
@@ -345,7 +358,7 @@ pub async fn tunnel_via_proxy(
     }
 }
 
-/// Sends a `CONNECT` request and returns the underlying stream once a `2xx`
+/// Send a `CONNECT` request and return the underlying stream once a `2xx`
 /// status is received. The returned stream is positioned after the empty line
 /// terminating the proxy response headers.
 async fn send_connect<S>(
@@ -388,7 +401,7 @@ fn format_host_header(host: &str, port: u16) -> String {
     }
 }
 
-/// Reads the proxy's response up to the empty line that terminates the
+/// Read the proxy's response up to the empty line that terminates the
 /// headers, validating the status line.
 async fn read_connect_response<S>(stream: &mut S) -> Result<(), TransportError>
 where
@@ -454,7 +467,7 @@ where
     Ok(())
 }
 
-/// Wraps a stream in a `rustls`‑backed TLS session using `webpki_roots`.
+/// Wrap a stream in a `rustls`-backed TLS session using `webpki_roots`.
 async fn wrap_tls<S>(stream: S, server_name: &str) -> Result<TlsStream<S>, TransportError>
 where
     S: AsyncRead + AsyncWrite + Unpin,

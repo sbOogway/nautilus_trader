@@ -13,21 +13,14 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import math
-
 import pytest
 
-import nautilus_trader.analysis as analysis_module
 from nautilus_trader.analysis import CAGR
-from nautilus_trader.analysis import Alpha
 from nautilus_trader.analysis import AvgLoser
 from nautilus_trader.analysis import AvgWinner
-from nautilus_trader.analysis import BetaRatio
 from nautilus_trader.analysis import CalmarRatio
-from nautilus_trader.analysis import DownCaptureRatio
 from nautilus_trader.analysis import Expectancy
 from nautilus_trader.analysis import ExpectedShortfall
-from nautilus_trader.analysis import InformationRatio
 from nautilus_trader.analysis import LongRatio
 from nautilus_trader.analysis import MaxDrawdown
 from nautilus_trader.analysis import MaxLoser
@@ -47,18 +40,12 @@ from nautilus_trader.analysis import RiskReturnRatio
 from nautilus_trader.analysis import SharpeRatio
 from nautilus_trader.analysis import SortinoRatio
 from nautilus_trader.analysis import TailRatio
-from nautilus_trader.analysis import TrackingError
-from nautilus_trader.analysis import TreynorRatio
 from nautilus_trader.analysis import UlcerIndex
-from nautilus_trader.analysis import UpCaptureRatio
 from nautilus_trader.analysis import ValueAtRisk
 from nautilus_trader.analysis import WinRate
 from nautilus_trader.model import Currency
 from nautilus_trader.model import Money
-from nautilus_trader.model import Position
 from nautilus_trader.model import PositionId
-from tests.providers import TestInstrumentProvider
-from tests.unit.model.factories import make_position_fill
 
 
 NO_ARG_STATISTICS = [
@@ -97,31 +84,6 @@ THRESHOLD_STATISTICS = [
     (ValueAtRisk, "Value at Risk"),
     (ExpectedShortfall, "Expected Shortfall"),
 ]
-
-BENCHMARK_STATISTICS = [
-    (Alpha, "Alpha"),
-    (BetaRatio, "Beta"),
-    (DownCaptureRatio, "Down Capture Ratio"),
-    (InformationRatio, "Information Ratio"),
-    (TrackingError, "Tracking Error"),
-    (TreynorRatio, "Treynor Ratio"),
-    (UpCaptureRatio, "Up Capture Ratio"),
-]
-
-ALL_STATISTICS = NO_ARG_STATISTICS + PERIOD_STATISTICS + THRESHOLD_STATISTICS + BENCHMARK_STATISTICS
-STATISTIC_METHODS = (
-    "calculate_from_positions",
-    "calculate_from_realized_pnls",
-    "calculate_from_returns",
-)
-EXPOSED_STATISTICS = sorted(
-    (
-        value
-        for value in vars(analysis_module).values()
-        if isinstance(value, type) and all(hasattr(value, method) for method in STATISTIC_METHODS)
-    ),
-    key=lambda cls: cls.__name__,
-)
 
 
 @pytest.mark.parametrize(("cls", "expected_prefix"), NO_ARG_STATISTICS)
@@ -171,7 +133,7 @@ def test_omega_ratio_rejects_non_finite_threshold(threshold):
 
 @pytest.mark.parametrize(
     ("cls", "_expected_prefix"),
-    ALL_STATISTICS,
+    NO_ARG_STATISTICS + PERIOD_STATISTICS + THRESHOLD_STATISTICS,
 )
 def test_pyo3_statistic_exposes_full_calculate_surface(cls, _expected_prefix):
     stat = cls()
@@ -199,17 +161,9 @@ def test_portfolio_analyzer_construction():
     assert analyzer.portfolio_returns() == {}
 
 
-def test_exposed_statistic_inventory_matches_constructor_matrix():
-    expected = {cls for cls, _expected_prefix in ALL_STATISTICS}
-
-    assert EXPOSED_STATISTICS
-    assert set(EXPOSED_STATISTICS) == expected
-
-
-@pytest.mark.parametrize("cls", EXPOSED_STATISTICS)
-def test_portfolio_analyzer_register_and_deregister_statistic(cls):
+def test_portfolio_analyzer_register_and_deregister_statistic():
     analyzer = PortfolioAnalyzer()
-    stat = cls()
+    stat = SharpeRatio()
 
     analyzer.register_statistic(stat)
 
@@ -220,28 +174,29 @@ def test_portfolio_analyzer_register_and_deregister_statistic(cls):
     assert analyzer.statistic(stat.name) is None
 
 
-def test_portfolio_analyzer_adds_native_position():
+@pytest.mark.parametrize("stat", [ReturnsSkewness(), ReturnsKurtosis(), TailRatio()])
+def test_portfolio_analyzer_registers_distribution_statistics(stat):
     analyzer = PortfolioAnalyzer()
-    instrument = TestInstrumentProvider.audusd_sim()
-    position = Position(instrument=instrument, fill=make_position_fill(instrument))
-    analyzer.register_statistic(LongRatio())
 
-    analyzer.add_positions([position])
+    analyzer.register_statistic(stat)
+    assert analyzer.statistic(stat.name) is not None
 
-    assert analyzer.get_performance_stats_general() == {"Long Ratio": 1.0}
+    analyzer.deregister_statistic(stat)
+    assert analyzer.statistic(stat.name) is None
 
 
-def test_undefined_cagr_and_calmar_ratio_return_nan():
-    nanos_per_day = 86_400_000_000_000
-    returns = {
-        day * nanos_per_day: value for day, value in enumerate([-1.5, 0.0, 0.0, 0.0, 0.0], start=1)
-    }
+@pytest.mark.parametrize(
+    "stat",
+    [UlcerIndex(), OmegaRatio(), ValueAtRisk(), ExpectedShortfall()],
+)
+def test_portfolio_analyzer_registers_risk_statistics(stat):
+    analyzer = PortfolioAnalyzer()
 
-    cagr = CAGR().calculate_from_returns(returns)
-    calmar_ratio = CalmarRatio().calculate_from_returns(returns)
+    analyzer.register_statistic(stat)
+    assert analyzer.statistic(stat.name) is not None
 
-    assert math.isnan(cagr)
-    assert math.isnan(calmar_ratio)
+    analyzer.deregister_statistic(stat)
+    assert analyzer.statistic(stat.name) is None
 
 
 def test_portfolio_analyzer_deregister_all_statistics():

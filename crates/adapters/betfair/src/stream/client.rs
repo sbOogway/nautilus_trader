@@ -229,7 +229,7 @@ impl BetfairStreamClient {
             certs_dir: None,
         };
 
-        let socket = SocketClient::connect(socket_config, Some(post_reconnection))
+        let socket = SocketClient::connect(socket_config, None, Some(post_reconnection), None)
             .await
             .map_err(|e| BetfairStreamError::ConnectionFailed(e.to_string()))?;
 
@@ -535,7 +535,7 @@ impl BetfairRaceStreamClient {
             certs_dir: None,
         };
 
-        let socket = SocketClient::connect(socket_config, Some(post_reconnection))
+        let socket = SocketClient::connect(socket_config, None, Some(post_reconnection), None)
             .await
             .map_err(|e| BetfairStreamError::ConnectionFailed(e.to_string()))?;
 

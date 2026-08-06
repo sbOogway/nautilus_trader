@@ -29,7 +29,5 @@ pub mod parse;
 pub mod retry;
 pub mod urls;
 
-pub(crate) mod serialization;
-
 #[cfg(test)]
 pub(crate) mod testing;

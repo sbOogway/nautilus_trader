@@ -1,12 +1,13 @@
 # MarkPriceUpdate
 
-`MarkPriceUpdate` represents an instrument's mark price. Derivatives venues commonly use mark
-prices for margining, liquidation checks, and unrealized PnL calculations.
+`MarkPriceUpdate` represents the current mark price for an instrument. Venues use
+mark prices most often for derivatives margining, liquidation checks, and unrealized
+PnL calculations.
 
 ## Fields
 
 | Field           | Rust type      | Python type    | Required/default | Notes                                    |
-| --------------- | -------------- | -------------- | ---------------- | ---------------------------------------- |
+|-----------------|----------------|----------------|------------------|------------------------------------------|
 | `instrument_id` | `InstrumentId` | `InstrumentId` | Required         | Instrument for the mark price.           |
 | `value`         | `Price`        | `Price`        | Required         | Current mark price.                      |
 | `ts_event`      | `UnixNanos`    | `int`          | Required         | Event timestamp in nanoseconds.          |
@@ -54,4 +55,4 @@ mark = MarkPriceUpdate(
 
 - [IndexPriceUpdate](index_price_update.md) covers the index reference price.
 - [FundingRateUpdate](funding_rate_update.md) covers perpetual funding metadata.
-- [Python API reference](/docs/python-api-latest/model/data.html) lists Python members.
+- [Python API Reference](/docs/python-api-latest/model/data.html) lists Python members.

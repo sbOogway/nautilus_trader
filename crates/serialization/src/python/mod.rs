@@ -25,7 +25,7 @@ pub mod arrow;
 
 use pyo3::prelude::*;
 
-/// Exposed through `nautilus_trader.serialization`.
+/// Loaded as `nautilus_pyo3.serialization`.
 ///
 /// # Errors
 ///

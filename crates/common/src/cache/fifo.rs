@@ -110,15 +110,13 @@ where
         self.index.contains(id)
     }
 
-    /// Inserts an ID into the cache.
+    /// Adds an ID to the cache.
     ///
-    /// Returns `true` when the ID was newly inserted and `false` when it was already present.
-    /// A duplicate does not change the eviction order. If the cache is at capacity, inserting a
-    /// new ID evicts the oldest entry.
-    #[must_use]
-    pub fn insert(&mut self, id: T) -> bool {
-        if !self.index.insert(id.clone()) {
-            return false;
+    /// If the ID already exists, this is a no-op.
+    /// If the cache is at capacity, the oldest entry is evicted.
+    pub fn add(&mut self, id: T) {
+        if self.index.contains(&id) {
+            return;
         }
 
         if self.order.len() == N
@@ -127,16 +125,8 @@ where
             self.index.remove(&evicted);
         }
 
-        self.order.push_front(id);
-        true
-    }
-
-    /// Adds an ID to the cache.
-    ///
-    /// If the ID already exists, this is a no-op.
-    /// If the cache is at capacity, the oldest entry is evicted.
-    pub fn add(&mut self, id: T) {
-        let _ = self.insert(id);
+        self.order.push_front(id.clone());
+        self.index.insert(id);
     }
 
     /// Removes an ID from the cache.
@@ -322,16 +312,6 @@ mod tests {
     }
 
     #[rstest]
-    fn test_insert_reports_whether_id_is_new() {
-        let mut cache: FifoCache<u32, 4> = FifoCache::new();
-
-        assert!(cache.insert(1));
-        assert!(!cache.insert(1));
-        assert!(cache.insert(2));
-        assert_eq!(cache.len(), 2);
-    }
-
-    #[rstest]
     fn test_eviction_at_capacity() {
         let mut cache: FifoCache<u32, 3> = FifoCache::new();
         cache.add(1);
@@ -469,19 +449,19 @@ mod tests {
     }
 
     #[rstest]
-    fn test_duplicate_insert_does_not_refresh_position() {
+    fn test_duplicate_add_does_not_refresh_position() {
         let mut cache: FifoCache<u32, 3> = FifoCache::new();
 
         // Add 1, 2, 3 (1 is oldest)
-        assert!(cache.insert(1));
-        assert!(cache.insert(2));
-        assert!(cache.insert(3));
+        cache.add(1);
+        cache.add(2);
+        cache.add(3);
 
         // Re-add 1 (should be no-op, 1 stays oldest)
-        assert!(!cache.insert(1));
+        cache.add(1);
 
         // Add 4: should evict 1 (still oldest), not 2
-        assert!(cache.insert(4));
+        cache.add(4);
         assert!(!cache.contains(&1));
         assert!(cache.contains(&2));
         assert!(cache.contains(&3));

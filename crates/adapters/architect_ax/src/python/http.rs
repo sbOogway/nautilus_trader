@@ -16,7 +16,7 @@
 //! Python bindings for the Ax HTTP client.
 
 use ahash::AHashMap;
-use jiff::Timestamp;
+use chrono::{DateTime, Utc};
 use nautilus_core::{datetime::datetime_to_unix_nanos, python::to_pyvalue_err};
 use nautilus_model::{
     data::BarType,
@@ -230,9 +230,6 @@ impl AxHttpClient {
 
     /// Requests all instruments from Ax.
     ///
-    /// Fee rates fall back to the rates last resolved from `GET /whoami`, and to zero when no
-    /// rates have been resolved.
-    ///
     /// # Errors
     ///
     /// Returns an error if the HTTP request fails or instrument parsing fails.
@@ -283,8 +280,8 @@ impl AxHttpClient {
         py: Python<'py>,
         instrument_id: InstrumentId,
         limit: Option<i32>,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
         let symbol = instrument_id.symbol.inner();
@@ -324,8 +321,8 @@ impl AxHttpClient {
         &self,
         py: Python<'py>,
         bar_type: BarType,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
         let symbol = bar_type.instrument_id().symbol.inner();
@@ -390,8 +387,8 @@ impl AxHttpClient {
         &self,
         py: Python<'py>,
         instrument_id: InstrumentId,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
 
@@ -490,7 +487,7 @@ impl AxHttpClient {
 
     /// Requests open orders from Ax and parses them to Nautilus `OrderStatusReport`.
     ///
-    /// Missing instruments are requested from Ax and cached before parsing order details.
+    /// Requires instruments to be cached for parsing order details.
     ///
     /// The `cid_resolver` parameter is an optional function that resolves a `cid` (u64)
     /// to a `ClientOrderId`. This is needed for correlating orders submitted via WebSocket.
@@ -499,11 +496,8 @@ impl AxHttpClient {
     ///
     /// Returns an error if:
     /// - The HTTP request fails.
-    /// - An order's instrument cannot be fetched or parsed.
-    ///
-    /// # Notes
-    ///
-    /// Order parsing failures are skipped with a warning.
+    /// - An order's instrument is not found in the cache.
+    /// - Order parsing fails.
     #[pyo3(name = "request_order_status_reports", signature = (account_id, client_order_ids=None))]
     fn py_request_order_status_reports<'py>(
         &self,
@@ -538,7 +532,7 @@ impl AxHttpClient {
 
     /// Requests fills from Ax and parses them to Nautilus `FillReport`.
     ///
-    /// Missing instruments are requested from Ax and cached before parsing fill details.
+    /// Requires instruments to be cached for parsing fill details.
     /// Traverses the provider's cursor chain. This is a best-effort historical
     /// read, not an atomic snapshot if AX corrects rows during the traversal.
     ///
@@ -546,7 +540,7 @@ impl AxHttpClient {
     ///
     /// Returns an error if:
     /// - The HTTP request fails.
-    /// - A fill's instrument cannot be fetched or parsed.
+    /// - A fill's instrument is not found in the cache.
     /// - Fill parsing fails.
     #[pyo3(name = "request_fill_reports")]
     fn py_request_fill_reports<'py>(
@@ -575,17 +569,14 @@ impl AxHttpClient {
 
     /// Requests positions from Ax and parses them to Nautilus `PositionStatusReport`.
     ///
-    /// Missing instruments are requested from Ax and cached before parsing position details.
+    /// Requires instruments to be cached for parsing position details.
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - The HTTP request fails.
-    /// - A position's instrument cannot be fetched or parsed.
-    ///
-    /// # Notes
-    ///
-    /// Position parsing failures are skipped with a warning.
+    /// - A position's instrument is not found in the cache.
+    /// - Position parsing fails.
     #[pyo3(name = "request_position_reports")]
     fn py_request_position_reports<'py>(
         &self,

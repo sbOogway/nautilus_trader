@@ -44,7 +44,7 @@ use crate::{
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.model", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -68,7 +68,6 @@ impl MarketIfTouchedOrder {
     /// Returns an error if:
     /// - The `quantity` is not positive.
     /// - The `time_in_force` is GTD and the `expire_time` is `None` or zero.
-    /// - The order metadata violates an [`OrderInitialized::new_checked`] invariant.
     #[expect(clippy::too_many_arguments)]
     pub fn new_checked(
         trader_id: TraderId,
@@ -99,7 +98,7 @@ impl MarketIfTouchedOrder {
         check_positive_quantity(quantity, stringify!(quantity))?;
         check_time_in_force(time_in_force, expire_time)?;
 
-        let init_order = OrderInitialized::new_checked(
+        let init_order = OrderInitialized::new(
             trader_id,
             strategy_id,
             instrument_id,
@@ -134,7 +133,7 @@ impl MarketIfTouchedOrder {
             exec_algorithm_params,
             exec_spawn_id,
             tags,
-        )?;
+        );
 
         Ok(Self {
             core: OrderCore::new(init_order),
@@ -403,11 +402,11 @@ impl Order for MarketIfTouchedOrder {
         self.overfill_qty
     }
 
-    fn avg_px(&self) -> Option<Decimal> {
+    fn avg_px(&self) -> Option<f64> {
         self.avg_px
     }
 
-    fn slippage(&self) -> Option<Decimal> {
+    fn slippage(&self) -> Option<f64> {
         self.slippage
     }
 
@@ -601,7 +600,6 @@ impl Display for MarketIfTouchedOrder {
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
-    use rust_decimal_macros::dec;
 
     use super::*;
     use crate::{
@@ -808,7 +806,16 @@ mod tests {
             .apply(OrderEventAny::Filled(order_filled_event))
             .unwrap();
 
-        // The fill triggers the slippage calculation: 98.50 - 90.0 for a buy order
-        assert_eq!(accepted_order.slippage(), Some(dec!(8.50)));
+        // The slippage calculation should be triggered by the filled event
+        assert!(accepted_order.slippage().is_some());
+
+        // We can also check the actual slippage value
+        let expected_slippage = 98.50 - 90.0; // For buy order: execution price - trigger price
+        let actual_slippage = accepted_order.slippage().unwrap();
+
+        assert!(
+            (actual_slippage - expected_slippage).abs() < 0.001,
+            "Expected slippage around {expected_slippage}, was {actual_slippage}"
+        );
     }
 }

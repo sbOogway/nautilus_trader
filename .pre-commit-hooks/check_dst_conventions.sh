@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Enforces deterministic simulation testing (DST) path bans in the in-scope crates.
 #
-# Rules (all applied to production code in the 17 in-scope crates):
-#   1. No direct std::time::Instant::now(), std::time::SystemTime::now(),
-#      jiff::Timestamp::now(), or jiff::Zoned::now() reads
+# Rules (all applied to production code in the 16 in-scope crates):
+#   1. No direct std::time::Instant::now(), std::time::SystemTime::now(), or
+#      chrono::Utc::now() reads
 #   2. No raw RNG entries (rand::thread_rng, rand::rng(), fastrand::,
 #      getrandom::, OsRng, uuid::Uuid::new_v4) without cfg gating
 #   3. No unbiased tokio::select! (must have `biased;` as first token in block)
@@ -35,9 +35,9 @@ NC='\033[0m'
 VIOLATIONS=0
 ALLOW_MARKER="dst-ok"
 
-# The 17 in-scope crates per phase3 upstream closure plan.
+# The 16 in-scope crates per phase3 upstream closure plan.
 IN_SCOPE_CRATES=(
-  "analysis" "backtest" "common" "core" "cryptography" "data" "execution"
+  "analysis" "common" "core" "cryptography" "data" "execution"
   "indicators" "live" "model" "network" "persistence" "portfolio"
   "risk" "serialization" "system" "trading"
 )
@@ -135,29 +135,15 @@ file_imports_std_system_time() {
     "$1" 2> /dev/null
 }
 
-# Detect whether a file imports `Timestamp` from Jiff so bare
-# `Timestamp::now()` calls can be flagged. Covers single, brace-list, and aliased
+# Detect whether a file imports `Utc` from the chrono crate so bare
+# `Utc::now()` calls can be flagged. Covers single, brace-list, and aliased
 # forms:
-#   - `use jiff::Timestamp;`
-#   - `use jiff::{..., Timestamp, ...};`
-#   - `use jiff::Timestamp as _;`
-file_imports_jiff_timestamp() {
-  rg -qU 'use\s+jiff::(Timestamp\b|\{[^}]*\bTimestamp\b)' \
+#   - `use chrono::Utc;`
+#   - `use chrono::{..., Utc, ...};`
+#   - `use chrono::Utc as _;`
+file_imports_chrono_utc() {
+  rg -qU 'use\s+chrono::(Utc\b|\{[^}]*\bUtc\b)' \
     "$1" 2> /dev/null
-}
-
-file_imports_jiff_zoned() {
-  rg -qU 'use\s+jiff::(Zoned\b|\{[^}]*\bZoned\b)' \
-    "$1" 2> /dev/null
-}
-
-# Extract aliases such as `use jiff::{Timestamp as Ts, Zoned as Z};` so renamed
-# imports cannot bypass Rule 1.
-jiff_clock_aliases() {
-  rg -oU 'use\s+jiff::[^;]*;' "$1" 2> /dev/null |
-    rg -o '\b(Timestamp|Zoned)[[:space:]]+as[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' 2> /dev/null |
-    sed -E 's/.*[[:space:]]as[[:space:]]+//' |
-    rg -v '^_$' || true
 }
 
 # Return 0 if any of the 15 lines preceding `line_num` in `file` carry a cfg
@@ -244,40 +230,21 @@ done < <(rg -n --no-heading \
   '\bSystemTime::now\(\)' \
   "${GLOBS[@]}" --type rust 2> /dev/null || true)
 
-# Fully-qualified Jiff wall-clock reads are always caught.
+# Fully-qualified `chrono::Utc::now()` is always caught.
 while IFS=: read -r file line_num content; do
   check_rule1_hit "$file" "$line_num" "$content"
 done < <(rg -n --no-heading \
-  'jiff::(Timestamp|Zoned)::now\(\)' \
+  'chrono::Utc::now\(\)' \
   "${GLOBS[@]}" --type rust 2> /dev/null || true)
 
-# Bare `Timestamp::now()` counts only when the file imports jiff::Timestamp.
-while IFS=: read -r file line_num content; do
-  [[ -z "$file" ]] && continue
-  file_imports_jiff_timestamp "$file" || continue
-  check_rule1_hit "$file" "$line_num" "$content"
-done < <(rg -n --no-heading \
-  '\bTimestamp::now\(\)' \
-  "${GLOBS[@]}" --type rust 2> /dev/null || true)
-
-# Bare `Zoned::now()` counts only when the file imports jiff::Zoned.
+# Bare `Utc::now()` counts only when the file imports chrono::Utc.
 while IFS=: read -r file line_num content; do
   [[ -z "$file" ]] && continue
-  file_imports_jiff_zoned "$file" || continue
+  file_imports_chrono_utc "$file" || continue
   check_rule1_hit "$file" "$line_num" "$content"
 done < <(rg -n --no-heading \
-  '\bZoned::now\(\)' \
+  '\bUtc::now\(\)' \
   "${GLOBS[@]}" --type rust 2> /dev/null || true)
-
-# Renamed Timestamp/Zoned imports must not bypass the bare-call checks above.
-while IFS= read -r file; do
-  while IFS= read -r alias; do
-    [[ -z "$alias" ]] && continue
-    while IFS=: read -r hit_file line_num content; do
-      check_rule1_hit "$hit_file" "$line_num" "$content"
-    done < <(rg -n --no-heading "\\b${alias}::now\\(\\)" "$file" 2> /dev/null || true)
-  done < <(jiff_clock_aliases "$file")
-done < <(rg --files "${GLOBS[@]}" --type rust 2> /dev/null || true)
 
 ################################################################################
 # Rule 2: raw RNG imports

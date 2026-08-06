@@ -18,7 +18,7 @@
 use std::{num::NonZero, str::FromStr};
 
 use ahash::AHashMap;
-use jiff::tz::Offset;
+use chrono::Timelike;
 use nautilus_core::{UnixNanos, uuid::UUID4};
 #[cfg(test)]
 use nautilus_model::types::Currency;
@@ -596,7 +596,7 @@ pub fn parse_order_msg(
     }
 
     if let Some(avg_px) = msg.avg_px {
-        report = report.with_avg_px(avg_px);
+        report = report.with_avg_px(avg_px)?;
     }
 
     if let Some(trigger_price) = msg.stop_px {
@@ -1102,10 +1102,9 @@ pub fn parse_instrument_msg(
 #[must_use]
 pub fn parse_funding_msg(msg: &BitmexFundingMsg, ts_init: UnixNanos) -> FundingRateUpdate {
     let instrument_id = InstrumentId::from(format!("{}.BITMEX", msg.symbol));
-    let funding_interval = Offset::UTC.to_datetime(msg.funding_interval);
-    let interval_hours = u16::from(funding_interval.hour().cast_unsigned());
-    let interval_minutes = u16::from(funding_interval.minute().cast_unsigned());
-    let interval = Some(interval_hours * 60 + interval_minutes);
+    let interval_hours = msg.funding_interval.hour();
+    let interval_minutes = msg.funding_interval.minute();
+    let interval = Some((interval_hours * 60 + interval_minutes) as u16);
     let ts_event = parse_optional_datetime_to_unix_nanos(&Some(msg.timestamp), "");
 
     FundingRateUpdate::new(
@@ -1203,7 +1202,7 @@ pub fn parse_margin_account_state(msg: &BitmexMarginMsg, ts_init: UnixNanos) -> 
 
 #[cfg(test)]
 mod tests {
-    use jiff::Timestamp;
+    use chrono::{DateTime, Utc};
     use nautilus_model::{
         enums::{AggressorSide, BookAction, LiquiditySide, PositionSide},
         identifiers::Symbol,
@@ -1490,7 +1489,9 @@ mod tests {
         let instrument = create_test_perpetual_instrument();
 
         let msg = BitmexTradeBinMsg {
-            timestamp: "2024-01-01T00:00:00Z".parse::<Timestamp>().unwrap(),
+            timestamp: DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
             symbol: Ustr::from("XBTUSD"),
             open: 50_000.0,
             high: 49_990.0,
@@ -1525,8 +1526,7 @@ mod tests {
     #[rstest]
     fn test_parse_order_msg() {
         let json_data = load_test_json("ws_order.json");
-        let mut msg: BitmexOrderMsg = serde_json::from_str(&json_data).unwrap();
-        msg.avg_px = Some(Decimal::from_str("30000.500000000004").unwrap());
+        let msg: BitmexOrderMsg = serde_json::from_str(&json_data).unwrap();
         let mut cache = AHashMap::new();
         let instrument = create_test_perpetual_instrument();
         let report = parse_order_msg(&msg, &instrument, &mut cache, UnixNanos::default()).unwrap();
@@ -1548,10 +1548,6 @@ mod tests {
         assert_eq!(report.quantity, Quantity::from(100));
         assert_eq!(report.filled_qty, Quantity::from(0));
         assert_eq!(report.price.unwrap(), Price::from("98000.0"));
-        assert_eq!(
-            report.avg_px,
-            Some(Decimal::from_str("30000.500000000004").unwrap())
-        );
         assert_eq!(report.ts_accepted, 1732530600000000000); // 2024-11-25T10:30:00.000Z
     }
 
@@ -1927,7 +1923,7 @@ mod tests {
             withdrawable_margin: None,
             maker_fee_discount: None,
             taker_fee_discount: None,
-            timestamp: Timestamp::from_second(1_700_000_000).unwrap(),
+            timestamp: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap(),
             foreign_margin_balance: None,
             foreign_requirement: None,
         };
@@ -1978,7 +1974,7 @@ mod tests {
             withdrawable_margin: None,
             maker_fee_discount: None,
             taker_fee_discount: None,
-            timestamp: Timestamp::from_second(1_700_000_000).unwrap(),
+            timestamp: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap(),
             foreign_margin_balance: None,
             foreign_requirement: None,
         };

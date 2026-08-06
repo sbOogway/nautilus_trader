@@ -362,13 +362,12 @@ class RoutedOrderProbe(Strategy):
     def on_quote(self, quote: QuoteTick):
         if not self._sent:
             self._sent = True
-            client_order_id = ClientOrderId(f"{self.strategy_id}-1")
             self.submit_order(
                 MarketOrder(
                     trader_id=self.trader_id,
                     strategy_id=self.strategy_id,
                     instrument_id=self._instrument_id,
-                    client_order_id=client_order_id,
+                    client_order_id=ClientOrderId(f"{self.strategy_id}-1"),
                     order_side=OrderSide.BUY,
                     quantity=self._qty,
                     init_id=UUID4(),
@@ -378,7 +377,6 @@ class RoutedOrderProbe(Strategy):
                     quote_quantity=False,
                     contingency_type=ContingencyType.NO_CONTINGENCY,
                     exec_algorithm_id=self._exec_algorithm_id,
-                    exec_spawn_id=client_order_id,
                 ),
             )
 

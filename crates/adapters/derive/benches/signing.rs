@@ -22,11 +22,7 @@
 //! signer construction (secp256k1 key expansion), ABI encoding of the trade
 //! module data, and nonce allocation.
 
-use std::{
-    hint::black_box,
-    str::FromStr,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{hint::black_box, str::FromStr};
 
 use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::{Address, B256, U256};
@@ -148,14 +144,10 @@ fn bench_rest_auth_headers(c: &mut Criterion) {
 
 fn bench_nonce_next(c: &mut Criterion) {
     let manager = NonceManager::new();
-    let now_ms = AtomicU64::new(NOW_MS);
 
     c.bench_function("nonce_next", |b| {
         b.iter(|| {
-            let now_ms = now_ms.fetch_add(1, Ordering::Relaxed);
-            let nonce = manager
-                .next_nonce_at(black_box(WALLET), SUBACCOUNT_ID, now_ms)
-                .unwrap();
+            let nonce = manager.next_nonce_at(black_box(WALLET), SUBACCOUNT_ID, NOW_MS);
             black_box(nonce);
         });
     });

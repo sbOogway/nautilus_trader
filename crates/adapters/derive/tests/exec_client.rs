@@ -79,8 +79,8 @@ use nautilus_model::{
     },
     events::{AccountState, OrderEventAny, OrderInitialized},
     identifiers::{
-        AccountId, ClientId, ClientOrderId, InstrumentId, OrderListId, StrategyId, TradeId,
-        TraderId, VenueOrderId,
+        AccountId, ClientId, ClientOrderId, InstrumentId, OrderListId, StrategyId, TraderId,
+        VenueOrderId,
     },
     orders::{Order, OrderAny, OrderList, OrderTestBuilder},
     reports::{OrderStatusReport, PositionStatusReport},
@@ -569,29 +569,21 @@ async fn handle_ws(mut socket: WebSocket, state: WsState) {
                                 .await
                             }
                             "private/replace" => {
-                                state.replace_orders.lock().await.push(params.clone());
+                                state.replace_orders.lock().await.push(params);
                                 ws_reply(id, &state.replace_reply, || {
-                                    let label = params
-                                        .get("label")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("STRAT-O-1");
-                                    let order_id_to_cancel = params
-                                        .get("order_id_to_cancel")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("ord-stale-1");
                                     json!({
                                         "result": {
                                             "order": order_json_with(
                                                 "ord-replaced-1",
-                                                label,
+                                                "STRAT-O-1",
                                                 "buy",
                                                 "ETH-PERP",
                                                 1_700_000_001_000_i64,
                                                 "open",
                                             ),
                                             "cancelled_order": order_json_with(
-                                                order_id_to_cancel,
-                                                label,
+                                                "ord-stale-1",
+                                                "STRAT-O-1",
                                                 "buy",
                                                 "ETH-PERP",
                                                 1_700_000_000_000_i64,
@@ -2705,12 +2697,6 @@ async fn test_cancel_trigger_order_without_venue_id_rejects_lookup_failure(
 async fn test_cancel_order_without_venue_id_calls_private_cancel_by_label() {
     let rest_state = RestState::default();
     let ws_state = WsState::default();
-    *ws_state.cancel_by_label_reply.lock().await = Some(
-        serde_json::from_str(include_str!(
-            "../test_data/common/ws_cancel_by_label_nonzero.json"
-        ))
-        .expect("nonzero cancel-by-label fixture is valid JSON"),
-    );
     let mut tc = build_client(rest_state, ws_state.clone()).await;
     tc.client.connect().await.expect("connect succeeds");
 
@@ -2767,26 +2753,6 @@ async fn test_cancel_order_without_venue_id_calls_private_cancel_by_label() {
     assert!(ws_state.cancelled_orders.lock().await.is_empty());
     drop(posts);
 
-    let outcome = tokio::time::timeout(Duration::from_millis(200), async {
-        loop {
-            match tc.rx.recv().await {
-                Some(ExecutionEvent::Order(OrderEventAny::Canceled(_))) => {
-                    return Some("OrderCanceled before venue notification");
-                }
-                Some(ExecutionEvent::Order(OrderEventAny::CancelRejected(_))) => {
-                    return Some("OrderCancelRejected for nonzero count");
-                }
-                Some(_) => {}
-                None => return Some("execution event channel closed"),
-            }
-        }
-    })
-    .await;
-    assert!(
-        outcome.is_err(),
-        "nonzero cancel-by-label must wait for venue notification, was {outcome:?}",
-    );
-
     let orders_channel = format!("{TEST_SUBACCOUNT}.orders");
     let canceled_frame = json!([order_json_with(
         "ord-canceled-by-label",
@@ -2809,165 +2775,6 @@ async fn test_cancel_order_without_venue_id_calls_private_cancel_by_label() {
         assert_eq!(
             canceled.venue_order_id.map(|id| id.to_string()),
             Some("ord-canceled-by-label".to_string()),
-        );
-    } else {
-        unreachable!();
-    }
-
-    tc.client.disconnect().await.expect("disconnect");
-}
-
-#[rstest]
-#[tokio::test]
-async fn test_cancel_order_by_label_zero_count_emits_cancel_rejected() {
-    let rest_state = RestState::default();
-    let ws_state = WsState::default();
-    *ws_state.cancel_by_label_reply.lock().await = Some(
-        serde_json::from_str(include_str!(
-            "../test_data/common/ws_cancel_by_label_zero.json"
-        ))
-        .expect("zero cancel-by-label fixture is valid JSON"),
-    );
-    let mut tc = build_client(rest_state, ws_state.clone()).await;
-    tc.client.connect().await.expect("connect succeeds");
-
-    let client_order_id = ClientOrderId::from("STRAT-CXL-BY-LABEL-ZERO");
-    let cancel = CancelOrder::new(
-        TraderId::from("TRADER-001"),
-        Some(ClientId::from("DERIVE")),
-        StrategyId::from("S-1"),
-        InstrumentId::from("ETH-PERP.DERIVE"),
-        client_order_id,
-        None,
-        UUID4::new(),
-        UnixNanos::default(),
-        None,
-        None,
-    );
-    tc.client.cancel_order(cancel).expect("cancel_order Ok");
-
-    let event = drain_until(
-        &mut tc.rx,
-        |event| {
-            matches!(
-                event,
-                ExecutionEvent::Order(OrderEventAny::CancelRejected(_))
-            )
-        },
-        "OrderCancelRejected for zero cancel-by-label count",
-    )
-    .await;
-
-    assert_eq!(ws_state.cancelled_labels.lock().await.len(), 1);
-    if let ExecutionEvent::Order(OrderEventAny::CancelRejected(rejected)) = event {
-        assert_eq!(rejected.client_order_id, client_order_id);
-        assert!(rejected.venue_order_id.is_none());
-        assert_eq!(
-            rejected.reason.as_str(),
-            "no open order matched the client_order_id label"
-        );
-    } else {
-        unreachable!();
-    }
-
-    tc.client.disconnect().await.expect("disconnect");
-}
-
-#[rstest]
-#[tokio::test]
-async fn test_cancel_order_by_label_jsonrpc_ambiguous_does_not_emit_cancel_rejected() {
-    let rest_state = RestState::default();
-    let ws_state = WsState::default();
-    *ws_state.cancel_by_label_reply.lock().await = Some(json!({
-        "error": {"code": -32603, "message": "Internal venue error"}
-    }));
-    let mut tc = build_client(rest_state, ws_state.clone()).await;
-    tc.client.connect().await.expect("connect succeeds");
-
-    let instrument_id = InstrumentId::from("ETH-PERP.DERIVE");
-    let client_order_id = ClientOrderId::from("STRAT-CXL-BY-LABEL-AMBIGUOUS");
-    let order = build_limit_order(
-        instrument_id,
-        client_order_id,
-        OrderSide::Buy,
-        Price::from("3500.00"),
-        Quantity::from("1.000"),
-    );
-    tc.cache
-        .borrow_mut()
-        .add_order(order.clone(), None, None, false)
-        .expect("cache insert");
-    tc.client
-        .submit_order(submit_cmd(&order))
-        .expect("submit Ok");
-    let _ = drain_until(
-        &mut tc.rx,
-        |event| matches!(event, ExecutionEvent::Order(OrderEventAny::Submitted(_))),
-        "OrderSubmitted",
-    )
-    .await;
-
-    let cancel = CancelOrder::new(
-        TraderId::from("TRADER-001"),
-        Some(ClientId::from("DERIVE")),
-        StrategyId::from("S-1"),
-        instrument_id,
-        client_order_id,
-        None,
-        UUID4::new(),
-        UnixNanos::default(),
-        None,
-        None,
-    );
-    tc.client.cancel_order(cancel).expect("cancel_order Ok");
-    wait_until(
-        || {
-            let state = ws_state.clone();
-            async move { !state.cancelled_labels.lock().await.is_empty() }
-        },
-        "private/cancel_by_label posted",
-    )
-    .await;
-
-    let outcome = tokio::time::timeout(Duration::from_millis(200), async {
-        loop {
-            match tc.rx.recv().await {
-                Some(ExecutionEvent::Order(OrderEventAny::CancelRejected(_))) => {
-                    return Some("OrderCancelRejected for ambiguous outcome");
-                }
-                Some(_) => {}
-                None => return Some("execution event channel closed"),
-            }
-        }
-    })
-    .await;
-    assert!(
-        outcome.is_err(),
-        "ambiguous cancel-by-label must not emit a terminal rejection, was {outcome:?}",
-    );
-
-    let orders_channel = format!("{TEST_SUBACCOUNT}.orders");
-    let canceled_frame = json!([order_json_with(
-        "ord-canceled-after-ambiguous-label",
-        client_order_id.as_str(),
-        "buy",
-        "ETH-PERP",
-        1_700_000_002_000_i64,
-        "cancelled",
-    )]);
-    ws_state.push_notification(make_subscription_frame(&orders_channel, &canceled_frame));
-    let event = drain_until(
-        &mut tc.rx,
-        |event| matches!(event, ExecutionEvent::Order(OrderEventAny::Canceled(_))),
-        "OrderCanceled after ambiguous cancel-by-label",
-    )
-    .await;
-
-    if let ExecutionEvent::Order(OrderEventAny::Canceled(canceled)) = event {
-        assert_eq!(canceled.client_order_id, client_order_id);
-        assert_eq!(
-            canceled.venue_order_id.map(|id| id.to_string()),
-            Some("ord-canceled-after-ambiguous-label".to_string()),
         );
     } else {
         unreachable!();
@@ -3598,26 +3405,6 @@ async fn test_modify_order_accepts_replacement_rejection_before_rpc_response() {
 async fn test_modify_order_accepts_replacement_open_before_rpc_response() {
     let rest_state = RestState::default();
     let ws_state = WsState::default();
-    *ws_state.replace_reply.lock().await = Some(json!({
-        "result": {
-            "order": order_json_with(
-                "ord-replaced-1",
-                "STRAT-O-1",
-                "buy",
-                "ETH-PERP",
-                1_700_000_003_000_i64,
-                "open",
-            ),
-            "cancelled_order": order_json_with(
-                "ord-before-replace",
-                "STRAT-O-1",
-                "buy",
-                "ETH-PERP",
-                1_700_000_002_000_i64,
-                "cancelled",
-            ),
-        },
-    }));
     let mut tc = build_client(rest_state, ws_state.clone()).await;
     tc.client.connect().await.expect("connect succeeds");
 
@@ -3728,12 +3515,12 @@ async fn test_modify_order_accepts_replacement_open_before_rpc_response() {
 async fn test_modify_order_unexpected_response_shape_does_not_emit_updated() {
     let rest_state = RestState::default();
     let ws_state = WsState::default();
-    // Venue returned `result: {}` with no coherent replace outcome. The typed
-    // handle rejects the inconsistent fields as a `Serde` error. A response the
-    // client cannot trust leaves the replace outcome ambiguous (the venue may
-    // have applied it), so the adapter emits no terminal event and lets
-    // reconciliation settle the order rather than rebinding to a stale VOI or
-    // falsely rejecting a live order.
+    // Venue returned `result: {}` (no `order.order_id`). Over the WS Trading
+    // API the typed handle cannot decode the missing `order`, so the request
+    // fails with a `Serde` error. A response the client cannot read leaves the
+    // replace outcome ambiguous (the venue may have applied it), so the adapter
+    // emits no terminal event and lets reconciliation settle the order rather
+    // than rebinding to a stale VOI or falsely rejecting a live order.
     *ws_state.replace_reply.lock().await = Some(json!({"result": {}}));
     let mut tc = build_client(rest_state, ws_state.clone()).await;
     tc.client.connect().await.expect("connect succeeds");
@@ -3802,143 +3589,6 @@ async fn test_modify_order_unexpected_response_shape_does_not_emit_updated() {
     assert!(
         terminal.is_err(),
         "malformed replace result must not emit a terminal modify event",
-    );
-
-    tc.client.disconnect().await.expect("disconnect");
-}
-
-#[rstest]
-#[tokio::test]
-async fn test_modify_order_partial_replace_failure_emits_cancelled_once() {
-    let rest_state = RestState::default();
-    let ws_state = WsState::default();
-    *ws_state.replace_reply.lock().await = Some(json!({
-        "result": {
-            "order": null,
-            "cancelled_order": order_json_with(
-                "ord-partial-old",
-                "STRAT-MOD-PARTIAL",
-                "buy",
-                "ETH-PERP",
-                1_700_000_002_000_i64,
-                "cancelled",
-            ),
-            "create_order_error": {
-                "code": 10001,
-                "message": "insufficient margin",
-            },
-        },
-    }));
-    let mut tc = build_client(rest_state, ws_state.clone()).await;
-    tc.client.connect().await.expect("connect succeeds");
-
-    let instrument_id = InstrumentId::from("ETH-PERP.DERIVE");
-    let client_order_id = ClientOrderId::from("STRAT-MOD-PARTIAL");
-    let order = build_limit_order(
-        instrument_id,
-        client_order_id,
-        OrderSide::Buy,
-        Price::from("3500.00"),
-        Quantity::from("1.000"),
-    );
-    tc.cache
-        .borrow_mut()
-        .add_order(order.clone(), None, None, false)
-        .expect("cache insert");
-    let _ = drain_until(
-        &mut tc.rx,
-        |event| matches!(event, ExecutionEvent::Account(_)),
-        "initial AccountState",
-    )
-    .await;
-
-    tc.client
-        .submit_order(submit_cmd(&order))
-        .expect("submit Ok");
-    let _ = drain_until(
-        &mut tc.rx,
-        |event| matches!(event, ExecutionEvent::Order(OrderEventAny::Submitted(_))),
-        "OrderSubmitted",
-    )
-    .await;
-
-    let orders_channel = format!("{TEST_SUBACCOUNT}.orders");
-    let open_frame = json!([order_json_with(
-        "ord-partial-old",
-        client_order_id.as_str(),
-        "buy",
-        "ETH-PERP",
-        1_700_000_001_000_i64,
-        "open",
-    )]);
-    ws_state.push_notification(make_subscription_frame(&orders_channel, &open_frame));
-    let _ = drain_until(
-        &mut tc.rx,
-        |event| matches!(event, ExecutionEvent::Order(OrderEventAny::Accepted(_))),
-        "OrderAccepted",
-    )
-    .await;
-
-    let cancel_frame = json!([order_json_with(
-        "ord-partial-old",
-        client_order_id.as_str(),
-        "buy",
-        "ETH-PERP",
-        1_700_000_002_000_i64,
-        "cancelled",
-    )]);
-    *ws_state.replace_notification_before_reply.lock().await =
-        Some(make_subscription_frame(&orders_channel, &cancel_frame));
-
-    let cmd = ModifyOrder::new(
-        TraderId::from("TRADER-001"),
-        Some(ClientId::from("DERIVE")),
-        StrategyId::from("S-1"),
-        instrument_id,
-        client_order_id,
-        Some(VenueOrderId::from("ord-partial-old")),
-        Some(Quantity::from("2.000")),
-        Some(Price::from("3505.00")),
-        None,
-        UUID4::new(),
-        UnixNanos::default(),
-        None,
-        None,
-    );
-    tc.client.modify_order(cmd).expect("modify_order Ok");
-
-    let event = drain_until(
-        &mut tc.rx,
-        |event| matches!(event, ExecutionEvent::Order(OrderEventAny::Canceled(_))),
-        "OrderCanceled after partial replace",
-    )
-    .await;
-    let ExecutionEvent::Order(OrderEventAny::Canceled(cancelled)) = event else {
-        unreachable!();
-    };
-    assert_eq!(cancelled.client_order_id, client_order_id);
-    assert_eq!(
-        cancelled.venue_order_id,
-        Some(VenueOrderId::from("ord-partial-old")),
-    );
-
-    let duplicate_terminal = tokio::time::timeout(Duration::from_millis(200), async {
-        loop {
-            match tc.rx.recv().await {
-                Some(ExecutionEvent::Order(
-                    OrderEventAny::Canceled(_)
-                    | OrderEventAny::Updated(_)
-                    | OrderEventAny::ModifyRejected(_),
-                )) => return true,
-                Some(_) => {}
-                None => return false,
-            }
-        }
-    })
-    .await;
-    assert!(
-        duplicate_terminal.is_err(),
-        "partial replace must emit exactly one terminal order event",
     );
 
     tc.client.disconnect().await.expect("disconnect");
@@ -4938,207 +4588,6 @@ async fn test_generate_mass_status_builds_startup_snapshot_from_http_reports() {
 
 #[rstest]
 #[tokio::test]
-async fn test_generate_mass_status_normalizes_duplicate_labels() {
-    let rest_state = RestState::default();
-    let ws_state = WsState::default();
-    let old_order = order_json_with(
-        "ord-replace-old",
-        "L-REPLACE",
-        "buy",
-        "ETH-PERP",
-        1_700_000_001_000,
-        "cancelled",
-    );
-    let mut replacement_order = order_json_with(
-        "ord-replace-new",
-        "L-REPLACE",
-        "buy",
-        "ETH-PERP",
-        1_700_000_002_000,
-        "open",
-    );
-    replacement_order["replaced_order_id"] = json!("ord-replace-old");
-    let reused_order_1 = order_json_with(
-        "ord-reused-1",
-        "L-REUSED",
-        "sell",
-        "ETH-PERP",
-        1_700_000_003_000,
-        "filled",
-    );
-    let reused_order_2 = order_json_with(
-        "ord-reused-2",
-        "L-REUSED",
-        "sell",
-        "ETH-PERP",
-        1_700_000_004_000,
-        "cancelled",
-    );
-    let mixed_old_order = order_json_with(
-        "ord-mixed-old",
-        "L-MIXED",
-        "buy",
-        "ETH-PERP",
-        1_700_000_005_000,
-        "cancelled",
-    );
-    let mut mixed_replacement_order = order_json_with(
-        "ord-mixed-new",
-        "L-MIXED",
-        "buy",
-        "ETH-PERP",
-        1_700_000_006_000,
-        "filled",
-    );
-    mixed_replacement_order["replaced_order_id"] = json!("ord-mixed-old");
-    let mixed_unrelated_order = order_json_with(
-        "ord-mixed-unrelated",
-        "L-MIXED",
-        "sell",
-        "ETH-PERP",
-        1_700_000_007_000,
-        "cancelled",
-    );
-    let active_history_order = order_json_with(
-        "ord-active",
-        "L-ACTIVE",
-        "buy",
-        "ETH-PERP",
-        1_700_000_008_000,
-        "open",
-    );
-    let active_label_reuse = order_json_with(
-        "ord-active-reuse",
-        "L-ACTIVE",
-        "sell",
-        "ETH-PERP",
-        1_700_000_009_000,
-        "filled",
-    );
-    *rest_state.open_orders_response.lock().await = json!({
-        "orders": [active_history_order.clone()],
-        "subaccount_id": TEST_SUBACCOUNT,
-    });
-    *rest_state.order_history_response.lock().await = json!({
-        "orders": [
-            old_order,
-            replacement_order,
-            reused_order_1,
-            reused_order_2,
-            mixed_old_order,
-            mixed_replacement_order,
-            mixed_unrelated_order,
-            active_history_order,
-            active_label_reuse,
-        ],
-        "pagination": {"count": 9, "num_pages": 1},
-        "subaccount_id": TEST_SUBACCOUNT,
-    });
-    *rest_state.trade_history_response.lock().await = json!({
-        "trades": [trade_json_with_label(
-            "trade-reused-1",
-            "ord-reused-1",
-            "ETH-PERP",
-            "L-REUSED",
-        )],
-        "pagination": {"count": 1, "num_pages": 1},
-        "subaccount_id": TEST_SUBACCOUNT,
-    });
-    let mut tc = build_client(rest_state, ws_state).await;
-    tc.client.connect().await.expect("connect succeeds");
-
-    let history_cmd = GenerateOrderStatusReports::new(
-        UUID4::new(),
-        UnixNanos::default(),
-        false,
-        Some(InstrumentId::from("ETH-PERP.DERIVE")),
-        None,
-        None,
-        None,
-        None,
-    );
-    let history_reports = tc
-        .client
-        .generate_order_status_reports(&history_cmd)
-        .await
-        .expect("history reports");
-    assert_eq!(history_reports.len(), 9);
-    for report in &history_reports {
-        let expected = match report.venue_order_id.as_str() {
-            "ord-replace-old" | "ord-replace-new" => ClientOrderId::from("L-REPLACE"),
-            "ord-reused-1" | "ord-reused-2" => ClientOrderId::from("L-REUSED"),
-            "ord-mixed-old" | "ord-mixed-new" | "ord-mixed-unrelated" => {
-                ClientOrderId::from("L-MIXED")
-            }
-            "ord-active" | "ord-active-reuse" => ClientOrderId::from("L-ACTIVE"),
-            venue_order_id => panic!("unexpected venue order ID {venue_order_id}"),
-        };
-        assert_eq!(report.client_order_id, Some(expected));
-    }
-
-    let mass_status = tc
-        .client
-        .generate_mass_status(Some(10_000_000))
-        .await
-        .expect("mass status request succeeds")
-        .expect("Derive returns mass status");
-    let reports = mass_status.order_reports();
-    let old_report = reports
-        .get(&VenueOrderId::from("ord-replace-old"))
-        .expect("superseded order report");
-    let replacement_report = reports
-        .get(&VenueOrderId::from("ord-replace-new"))
-        .expect("replacement order report");
-
-    assert_eq!(
-        old_report.client_order_id,
-        Some(ClientOrderId::from("L-REPLACE")),
-    );
-    assert_eq!(
-        replacement_report.client_order_id,
-        Some(ClientOrderId::from("L-REPLACE")),
-    );
-
-    for venue_order_id in ["ord-reused-1", "ord-reused-2"] {
-        let report = reports
-            .get(&VenueOrderId::from(venue_order_id))
-            .expect("reused-label order report");
-        assert!(report.client_order_id.is_none());
-    }
-
-    for venue_order_id in ["ord-mixed-old", "ord-mixed-new", "ord-mixed-unrelated"] {
-        let report = reports
-            .get(&VenueOrderId::from(venue_order_id))
-            .expect("mixed-label order report");
-        assert!(report.client_order_id.is_none());
-    }
-    assert_eq!(
-        reports
-            .get(&VenueOrderId::from("ord-active"))
-            .expect("open order report")
-            .client_order_id,
-        Some(ClientOrderId::from("L-ACTIVE")),
-    );
-    assert!(
-        reports
-            .get(&VenueOrderId::from("ord-active-reuse"))
-            .expect("reused active-label order report")
-            .client_order_id
-            .is_none(),
-    );
-    let fills = mass_status.fill_reports();
-    let reused_fills = fills
-        .get(&VenueOrderId::from("ord-reused-1"))
-        .expect("reused-label fill reports");
-    assert_eq!(reused_fills.len(), 1);
-    assert_eq!(reused_fills[0].trade_id, TradeId::from("trade-reused-1"));
-    assert!(reused_fills[0].client_order_id.is_none());
-
-    tc.client.disconnect().await.expect("disconnect");
-}
-
-#[rstest]
-#[tokio::test]
 async fn test_generate_mass_status_adds_flat_position_without_current_position() {
     let rest_state = RestState::default();
     let ws_state = WsState::default();
@@ -5180,72 +4629,6 @@ async fn test_generate_mass_status_adds_flat_position_without_current_position()
     assert_eq!(eth_reports.len(), 1);
     assert_eq!(eth_reports[0].position_side, PositionSideSpecified::Flat);
     assert_eq!(eth_reports[0].signed_decimal_qty, dec!(0));
-
-    tc.client.disconnect().await.expect("disconnect");
-}
-
-#[rstest]
-#[tokio::test]
-async fn test_generate_mass_status_does_not_flatten_unconverted_position() {
-    let rest_state = RestState::default();
-    let ws_state = WsState::default();
-    *rest_state.open_orders_response.lock().await = json!({
-        "orders": [],
-        "subaccount_id": TEST_SUBACCOUNT,
-    });
-    *rest_state.order_history_response.lock().await = json!({
-        "orders": [
-            order_json_with(
-                "ord-held-eth", "L-HELD-ETH", "buy", "ETH-PERP", 1_700_000_003_000, "filled",
-            ),
-            order_json_with(
-                "ord-flat-btc", "L-FLAT-BTC", "sell", "BTC-PERP", 1_700_000_004_000, "filled",
-            ),
-        ],
-        "pagination": {"count": 2, "num_pages": 1},
-        "subaccount_id": TEST_SUBACCOUNT,
-    });
-    *rest_state.trade_history_response.lock().await = json!({
-        "trades": [],
-        "pagination": {"count": 0, "num_pages": 0},
-        "subaccount_id": TEST_SUBACCOUNT,
-    });
-    *rest_state.positions_response.lock().await = json!({
-        "positions": [
-            sample_position_json("ETH-PERP", "0.1234567890123456789012345678912345"),
-            sample_position_json("SOL-PERP", "2.5"),
-        ],
-        "subaccount_id": TEST_SUBACCOUNT,
-    });
-    let mut tc = build_client(rest_state, ws_state).await;
-    tc.client.connect().await.expect("connect succeeds");
-
-    let mass_status = tc
-        .client
-        .generate_mass_status(Some(10_000_000))
-        .await
-        .expect("mass status request succeeds")
-        .expect("Derive returns mass status");
-
-    let position_reports = mass_status.position_reports();
-    assert!(
-        !position_reports.contains_key(&InstrumentId::from("ETH-PERP.DERIVE")),
-        "unconverted held position must not be reported as flat",
-    );
-
-    let sol_reports = position_reports
-        .get(&InstrumentId::from("SOL-PERP.DERIVE"))
-        .expect("valid SOL-PERP position report");
-    assert_eq!(sol_reports.len(), 1);
-    assert_eq!(sol_reports[0].position_side, PositionSideSpecified::Long);
-    assert_eq!(sol_reports[0].signed_decimal_qty, dec!(2.5));
-
-    let btc_reports = position_reports
-        .get(&InstrumentId::from("BTC-PERP.DERIVE"))
-        .expect("genuinely absent BTC-PERP position has a flat report");
-    assert_eq!(btc_reports.len(), 1);
-    assert_eq!(btc_reports[0].position_side, PositionSideSpecified::Flat);
-    assert_eq!(btc_reports[0].signed_decimal_qty, dec!(0));
 
     tc.client.disconnect().await.expect("disconnect");
 }

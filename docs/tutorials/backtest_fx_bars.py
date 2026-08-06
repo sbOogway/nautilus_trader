@@ -76,14 +76,13 @@
 # %%
 from decimal import Decimal
 
-from nautilus_trader.common import LogLevel
-from nautilus_trader.config import BacktestEngineConfig
-from nautilus_trader.backtest import BacktestEngine
-from nautilus_trader.backtest import FXRolloverInterestModule
-from nautilus_trader.backtest import InterestRateRecord
-from nautilus_trader.config import LoggerConfig
+from nautilus_trader.backtest.config import BacktestEngineConfig
+from nautilus_trader.backtest.engine import BacktestEngine
+from nautilus_trader.backtest.models import FillModel
+from nautilus_trader.backtest.modules import FXRolloverInterestConfig
+from nautilus_trader.backtest.modules import FXRolloverInterestModule
+from nautilus_trader.config import LoggingConfig
 from nautilus_trader.config import RiskEngineConfig
-from nautilus_trader.execution import ProbabilisticFillModel
 from nautilus_trader.examples.strategies.ema_cross import EMACross
 from nautilus_trader.examples.strategies.ema_cross import EMACrossConfig
 from nautilus_trader.model import BarType
@@ -94,9 +93,8 @@ from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
 from nautilus_trader.persistence.wranglers import QuoteTickDataWrangler
-from nautilus_trader.testkit.providers import TestDataProvider
-from nautilus_trader.testkit.providers import TestInstrumentProvider
-
+from nautilus_trader.test_kit.providers import TestDataProvider
+from nautilus_trader.test_kit.providers import TestInstrumentProvider
 
 # %% [markdown]
 # ## Engine setup
@@ -107,7 +105,7 @@ from nautilus_trader.testkit.providers import TestInstrumentProvider
 # %%
 config = BacktestEngineConfig(
     trader_id="BACKTESTER-001",
-    logging=LoggerConfig(stdout_level=LogLevel.ERROR),
+    logging=LoggingConfig(log_level="ERROR"),
     risk_engine=RiskEngineConfig(bypass=True),
 )
 engine = BacktestEngine(config=config)
@@ -122,12 +120,8 @@ engine = BacktestEngine(config=config)
 
 # %%
 provider = TestDataProvider()
-interest_rate_data = provider.read_csv("short-term-interest.csv")
-interest_rate_records = [
-    InterestRateRecord(location=row.LOCATION, time=row.TIME, value=row.Value)
-    for row in interest_rate_data.itertuples(index=False)
-]
-fx_rollover_interest = FXRolloverInterestModule(records=interest_rate_records)
+rollover_config = FXRolloverInterestConfig(provider.read_csv("short-term-interest.csv"))
+fx_rollover_interest = FXRolloverInterestModule(config=rollover_config)
 
 # %% [markdown]
 # ## Fill model
@@ -137,7 +131,7 @@ fx_rollover_interest = FXRolloverInterestModule(records=interest_rate_records)
 # The seed makes the run reproducible.
 
 # %%
-fill_model = ProbabilisticFillModel(
+fill_model = FillModel(
     prob_fill_on_limit=0.2,
     prob_slippage=0.5,
     random_seed=42,

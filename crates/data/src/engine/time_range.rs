@@ -118,10 +118,15 @@ impl DataEngine {
     fn bound_time_range_pipeline_dates(
         &self,
         req: &RequestCommand,
-    ) -> anyhow::Result<(jiff::Timestamp, jiff::Timestamp, UnixNanos, UnixNanos)> {
+    ) -> anyhow::Result<(
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+        UnixNanos,
+        UnixNanos,
+    )> {
         let now_ns = self.clock.borrow().timestamp_ns();
         let now = now_ns.to_datetime_utc();
-        let zero = jiff::Timestamp::UNIX_EPOCH;
+        let zero = chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(0);
         let (start, end) = time_range_request_dates(req);
         let mut start = start.unwrap_or(zero);
         let mut end = end.unwrap_or(now);
@@ -408,7 +413,10 @@ impl DefaultTimeRangeGenerator {
 
 fn time_range_request_dates(
     req: &RequestCommand,
-) -> (Option<jiff::Timestamp>, Option<jiff::Timestamp>) {
+) -> (
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<chrono::DateTime<chrono::Utc>>,
+) {
     match req {
         RequestCommand::BookDeltas(cmd) => (cmd.start, cmd.end),
         RequestCommand::BookDepth(cmd) => (cmd.start, cmd.end),
@@ -423,8 +431,8 @@ fn time_range_request_dates(
 
 fn time_range_parent_request_with_dates(
     req: RequestCommand,
-    start: Option<jiff::Timestamp>,
-    end: Option<jiff::Timestamp>,
+    start: Option<chrono::DateTime<chrono::Utc>>,
+    end: Option<chrono::DateTime<chrono::Utc>>,
     ts_init: UnixNanos,
 ) -> RequestCommand {
     match req {

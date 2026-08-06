@@ -63,7 +63,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::fixed::{
     FIXED_PRECISION, FIXED_SCALAR, FIXED_SCALAR_RAW, MAX_FLOAT_PRECISION, check_fixed_precision,
     checked_mul_div_fixed, mantissa_exponent_to_fixed_i128, mantissa_exponent_to_raw_checked,
-    raw_scales_match, scaled_raw_to_decimal,
+    raw_scales_match,
 };
 #[cfg(not(feature = "high-precision"))]
 use super::fixed::{f64_to_fixed_u64, fixed_u64_to_f64};
@@ -127,7 +127,11 @@ pub const QUANTITY_MIN: f64 = 0.0;
 #[derive(Clone, Copy, Default, Eq)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.model", frozen, from_py_object)
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.model",
+        frozen,
+        from_py_object
+    )
 )]
 #[cfg_attr(
     feature = "python",
@@ -420,7 +424,7 @@ impl Quantity {
             clippy::cast_lossless,
             reason = "cast is real when QuantityRaw is u64, no-op when u128"
         )]
-        scaled_raw_to_decimal(rescaled_raw as i128, self.precision)
+        Decimal::from_i128_with_scale(rescaled_raw as i128, u32::from(self.precision))
     }
 
     /// Returns a raw fixed-point quantity as a `Decimal`.
@@ -1149,7 +1153,7 @@ mod tests {
 
     #[rstest]
     fn test_from_i64_exact() {
-        let max = quantity_max_i64();
+        let max = i64::try_from(QUANTITY_RAW_MAX / FIXED_SCALAR_RAW).unwrap();
         let values = [0, 1, max];
         let quantities = values.map(Quantity::from);
         let expected =
@@ -1175,7 +1179,7 @@ mod tests {
 
     #[rstest]
     fn test_from_u64_exact() {
-        let max = quantity_max_u64();
+        let max = u64::try_from(QUANTITY_RAW_MAX / FIXED_SCALAR_RAW).unwrap();
         let values = [0, 1, max];
         let quantities = values.map(Quantity::from);
         let expected = values.map(|value| (QuantityRaw::from(value) * FIXED_SCALAR_RAW, 0));
@@ -1212,7 +1216,7 @@ mod tests {
         should_panic(expected = "Raw value exceeds QuantityRaw range")
     )]
     fn test_from_i64_overflow_panics() {
-        let max = quantity_max_i64();
+        let max = i64::try_from(QUANTITY_RAW_MAX / FIXED_SCALAR_RAW).unwrap();
 
         let _ = Quantity::from(max + 1);
     }
@@ -1227,21 +1231,9 @@ mod tests {
         should_panic(expected = "Raw value exceeds QuantityRaw range")
     )]
     fn test_from_u64_overflow_panics() {
-        let max = quantity_max_u64();
+        let max = u64::try_from(QUANTITY_RAW_MAX / FIXED_SCALAR_RAW).unwrap();
 
         let _ = Quantity::from(max + 1);
-    }
-
-    fn quantity_max_i64() -> i64 {
-        i64::try_from(QUANTITY_RAW_MAX / FIXED_SCALAR_RAW).unwrap()
-    }
-
-    #[allow(
-        clippy::useless_conversion,
-        reason = "try_from is a no-op when QuantityRaw is u64, and narrows when u128 (high-precision)"
-    )]
-    fn quantity_max_u64() -> u64 {
-        u64::try_from(QUANTITY_RAW_MAX / FIXED_SCALAR_RAW).unwrap()
     }
 
     #[rstest] // Test does not panic rather than exact value
@@ -1805,18 +1797,6 @@ mod tests {
     fn test_from_mantissa_exponent_zero() {
         let qty = Quantity::from_mantissa_exponent(0, 2, 2);
         assert_eq!(qty.as_f64(), 0.0);
-    }
-
-    #[cfg(feature = "high-precision")]
-    #[rstest]
-    #[case(QUANTITY_RAW_MAX, dec!(34028236692093))]
-    #[case(80_000_000_000_000_000_000_000_000_000, dec!(8000000000000))]
-    fn test_as_decimal_above_decimal_mantissa(#[case] raw: QuantityRaw, #[case] expected: Decimal) {
-        // Regression: a precision-16 quantity above roughly 7.92e12 rescales to a raw value
-        // beyond `Decimal`'s 96-bit mantissa, which used to panic during conversion.
-        let qty = Quantity::from_raw(raw, 16);
-
-        assert_eq!(qty.as_decimal(), expected);
     }
 
     #[rstest]

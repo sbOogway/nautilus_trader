@@ -53,7 +53,10 @@ impl ClientConfig for PolymarketDataClientConfig {
 /// Factory for creating Polymarket data clients.
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.polymarket", from_py_object)
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.polymarket",
+        from_py_object
+    )
 )]
 #[cfg_attr(
     feature = "python",
@@ -162,7 +165,10 @@ impl ClientConfig for PolymarketExecClientConfig {
 /// Factory for creating Polymarket execution clients.
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.polymarket", from_py_object)
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.polymarket",
+        from_py_object
+    )
 )]
 #[cfg_attr(
     feature = "python",

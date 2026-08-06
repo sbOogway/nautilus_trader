@@ -17,27 +17,54 @@ use std::{cmp, fmt::Display, time::Duration};
 
 use super::{StateStore, clock, nanos::Nanos, quota::Quota};
 
-/// Rate‑limiting parameters captured for a rejected decision.
-///
-/// `t` is one cell's weight in time, `tau` is the burst capacity in time, and `tat` is the
-/// theoretical arrival time used to calculate the next admissible request.
+/// Information about the rate-limiting state used to reach a decision.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct StateSnapshot {
+    /// The "weight" of a single packet in units of time.
     t: Nanos,
+    /// The "burst capacity" of the bucket.
     tau: Nanos,
+    /// The time at which the measurement was taken.
+    pub(crate) time_of_measurement: Nanos,
+    /// The next time a cell is expected to arrive
     pub(crate) tat: Nanos,
 }
 
 impl StateSnapshot {
     /// Creates a new [`StateSnapshot`] instance.
     #[inline]
-    pub(crate) const fn new(t: Nanos, tau: Nanos, tat: Nanos) -> Self {
-        Self { t, tau, tat }
+    pub(crate) const fn new(t: Nanos, tau: Nanos, time_of_measurement: Nanos, tat: Nanos) -> Self {
+        Self {
+            t,
+            tau,
+            time_of_measurement,
+            tat,
+        }
     }
 
     /// Returns the quota used to make the rate limiting decision.
     pub(crate) fn quota(&self) -> Quota {
         Quota::from_gcra_parameters(self.t, self.tau)
+    }
+
+    /// Returns the number of cells that can be let through in
+    /// addition to a (possible) positive outcome.
+    ///
+    /// If this state snapshot is based on a negative rate limiting
+    /// outcome, this method returns 0.
+    #[allow(dead_code)]
+    pub(crate) fn remaining_burst_capacity(&self) -> u32 {
+        let t = self.t.as_u64();
+        if t == 0 {
+            return 0;
+        }
+
+        let t0 = self.time_of_measurement + self.t;
+
+        (cmp::min(
+            (t0 + self.tau).saturating_sub(self.tat).as_u64(),
+            self.tau.as_u64(),
+        ) / t) as u32
     }
 }
 
@@ -52,7 +79,7 @@ pub struct NotUntil<P: clock::Reference> {
 }
 
 impl<P: clock::Reference> NotUntil<P> {
-    /// Creates a `NotUntil` as a negative rate‑limiting result.
+    /// Create a `NotUntil` as a negative rate-limiting result.
     #[inline]
     pub(crate) const fn new(state: StateSnapshot, start: P) -> Self {
         Self { state, start }
@@ -92,10 +119,12 @@ impl<P: clock::Reference> Display for NotUntil<P> {
     }
 }
 
-// GCRA parameters: `t` is one cell's weight in time, and `tau` is burst capacity in time
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Gcra {
+    /// The "weight" of a single packet in units of time.
     t: Nanos,
+
+    /// The "burst capacity" of the bucket.
     tau: Nanos,
 }
 
@@ -138,7 +167,7 @@ impl Gcra {
             let earliest_time = tat.saturating_sub(tau);
             if t0 < earliest_time {
                 Err(NotUntil::new(
-                    StateSnapshot::new(self.t, self.tau, earliest_time),
+                    StateSnapshot::new(self.t, self.tau, earliest_time, earliest_time),
                     start,
                 ))
             } else {

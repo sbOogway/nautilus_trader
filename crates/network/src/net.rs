@@ -15,17 +15,18 @@
 
 //! Network abstractions for dependency injection and testing.
 //!
-//! The traits and type aliases let network clients use either real `tokio` networking or simulated
-//! `turmoil` networking through dependency injection.
+//! This module provides traits and types that allow our networking components
+//! to work with both real networking (`tokio::net`) and simulated networking (`turmoil::net`)
+//! through dependency injection.
 //!
-//! ## Conditional compilation
+//! ## Conditional Compilation
 //!
-//! The module selects TCP types at compile time:
+//! The module re-exports TCP types that are swapped at compile time:
 //! - Default builds: `tokio::net::{TcpStream, TcpListener}`
 //! - Builds with `--features turmoil`: `turmoil::net::{TcpStream, TcpListener}`
 //!
-//! Production code therefore runs against the simulator without source changes, while default
-//! builds incur no runtime dispatch or simulation overhead.
+//! This allows production code to be tested with turmoil's network simulation
+//! without runtime overhead or code changes when the feature flag is enabled.
 
 use std::{future::Future, io::Result};
 
@@ -42,7 +43,7 @@ pub use turmoil::net::{TcpListener, TcpStream};
 pub trait TcpConnector: Send + Sync {
     type Stream: AsyncRead + AsyncWrite + Send + Unpin + 'static;
 
-    /// Connects to the specified address.
+    /// Connect to the specified address.
     fn connect(&self, addr: &str) -> impl Future<Output = Result<Self::Stream>> + Send;
 }
 

@@ -53,7 +53,7 @@ use nautilus_model::{
     data::{
         Bar, BarSpecification, BarType, BookOrder, Data as NautilusData, FundingRateUpdate,
         IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate, OrderBookDelta, OrderBookDeltas,
-        QuoteTick,
+        OrderBookDeltas_API, QuoteTick,
     },
     enums::{BookAction, BookType, MarketStatusAction, OrderSide, RecordFlag},
     identifiers::{ClientId, InstrumentId, Symbol, Venue},
@@ -1742,7 +1742,9 @@ impl DydxDataClient {
                 log::error!("Cannot resolve crossed order book: no instrument for {instrument_id}");
                 // Still emit the raw deltas if delta subscription is active
                 if active_delta_subs.contains(&instrument_id)
-                    && let Err(e) = data_sender.send(DataEvent::Data(NautilusData::from(deltas)))
+                    && let Err(e) = data_sender.send(DataEvent::Data(NautilusData::from(
+                        OrderBookDeltas_API::new(deltas),
+                    )))
                 {
                     log::error!("Failed to emit order book deltas: {e}");
                 }
@@ -1820,7 +1822,7 @@ impl DydxDataClient {
 
         // Conditionally emit OrderBookDeltas if instrument has delta subscription
         if active_delta_subs.contains(&instrument_id) {
-            let data: NautilusData = resolved_deltas.into();
+            let data: NautilusData = OrderBookDeltas_API::new(resolved_deltas).into();
             if let Err(e) = data_sender.send(DataEvent::Data(data)) {
                 log::error!("Failed to emit order book deltas event: {e}");
             }

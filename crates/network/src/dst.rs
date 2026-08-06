@@ -27,16 +27,16 @@
 //! tests that drive time via `tokio::time::advance`.
 //!
 //! `nautilus-network` sits below `nautilus-common` in the dependency graph and
-//! cannot import from `nautilus_common::live::dst`, which is why this module
+//! cannot import from `nautilus_common::live::dst`, which is why this helper
 //! is crate-local.
 
 pub mod time {
     pub use std::time::Duration;
 
     #[cfg(all(feature = "simulation", madsim))]
-    pub use madsim::time::{Instant, sleep, sleep_until, timeout};
+    pub use madsim::time::{Instant, sleep, timeout};
     #[cfg(not(all(feature = "simulation", madsim)))]
-    pub use tokio::time::{Instant, sleep, sleep_until, timeout};
+    pub use tokio::time::{Instant, sleep, timeout};
 }
 
 #[cfg(test)]

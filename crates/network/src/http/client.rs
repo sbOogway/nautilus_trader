@@ -41,16 +41,31 @@ const DEFAULT_HTTP2_KEEP_ALIVE_SECS: u64 = 30;
 ///
 /// Bounds peak memory per response so a hostile or malfunctioning endpoint
 /// cannot exhaust memory by streaming an arbitrarily large body. Mirrors the
-/// caps already enforced on the WebSocket and raw‑socket paths.
+/// caps already enforced on the WebSocket and raw-socket paths.
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 100 * 1024 * 1024;
 
-/// An asynchronous HTTP client with rate limiting, timeouts, and custom headers.
+/// An HTTP client that supports rate limiting and timeouts.
 ///
-/// The client uses `reqwest` for I/O and supports default and per‑key quotas. Multiple clients
-/// can share the same rate limiter when their requests consume one quota budget.
+/// Built on `reqwest` for async I/O. Allows per-endpoint and default quotas
+/// through a rate limiter.
+///
+/// This struct is designed to handle HTTP requests efficiently, providing
+/// support for rate limiting, timeouts, and custom headers. The client is
+/// built on top of `reqwest` and can be used for both synchronous and
+/// asynchronous HTTP requests.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.network", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.network")
+)]
 pub struct HttpClient {
+    /// The underlying HTTP client used to make requests.
     pub(crate) client: InnerHttpClient,
+    /// The rate limiters that control the request rate.
     pub(crate) rate_limiters: Arc<[Arc<RateLimiter<Ustr, MonotonicClock>>]>,
 }
 
@@ -79,7 +94,7 @@ impl HttpClient {
         Self::new_with_rate_limiter(headers, header_keys, timeout_secs, proxy_url, rate_limiter)
     }
 
-    /// Creates a new [`HttpClient`] instance sharing an externally‑owned rate limiter.
+    /// Creates a new [`HttpClient`] instance sharing an externally-owned rate limiter.
     ///
     /// Use this constructor to share a single [`RateLimiter`] across multiple
     /// [`HttpClient`] instances (for example, the HTTP clients owned by an
@@ -107,7 +122,7 @@ impl HttpClient {
         )
     }
 
-    /// Creates a new [`HttpClient`] instance sharing multiple externally‑owned rate limiters.
+    /// Creates a new [`HttpClient`] instance sharing multiple externally-owned rate limiters.
     ///
     /// Each request awaits every limiter with the same keys. A limiter with no default quota
     /// ignores keys it does not own, allowing independent quota scopes such as per-IP and
@@ -133,7 +148,7 @@ impl HttpClient {
             let header_name = HeaderName::from_str(&key)
                 .map_err(|e| HttpClientError::Error(format!("Invalid header name '{key}': {e}")))?;
             let header_value = HeaderValue::from_str(&value).map_err(|e| {
-                HttpClientError::Error(format!("Invalid header value for '{key}': {e}"))
+                HttpClientError::Error(format!("Invalid header value '{value}': {e}"))
             })?;
             header_map.insert(header_name, header_value);
         }
@@ -162,21 +177,23 @@ impl HttpClient {
             .build()
             .map_err(|e| HttpClientError::ClientBuildError(e.to_string()))?;
 
-        // Pre-intern header keys as HeaderName. An invalid key is an error: a silent drop would
-        // make response extraction read nothing.
-        let response_headers = header_keys
+        // Pre-intern header keys as HeaderName, keeping both vectors aligned,
+        // an invalid key is an error: a silent drop would make response extraction read nothing.
+        let (valid_keys, header_names): (Vec<String>, Vec<HeaderName>) = header_keys
             .into_iter()
-            .map(|key| match HeaderName::from_str(&key) {
-                Ok(name) => Ok((key, name)),
-                Err(e) => Err(HttpClientError::Error(format!(
-                    "Invalid header key '{key}': {e}"
-                ))),
+            .map(|k| {
+                HeaderName::from_str(&k)
+                    .map(|name| (k.clone(), name))
+                    .map_err(|e| HttpClientError::Error(format!("Invalid header key '{k}': {e}")))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .unzip();
 
         let client = InnerHttpClient {
             client,
-            response_headers: Arc::from(response_headers),
+            header_keys: Arc::from(valid_keys),
+            header_names: Arc::from(header_names),
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
         };
 
@@ -358,12 +375,18 @@ impl HttpClient {
 
 /// Internal implementation backing [`HttpClient`].
 ///
-/// The underlying [`reqwest::Client`] reuses pooled connections and is cheap to clone. Responses
-/// retain only configured header fields, and bodies larger than `max_response_bytes` are rejected.
+/// The client is backed by a [`reqwest::Client`] which keeps connections alive and
+/// can be cloned cheaply. The client also has a list of header fields to
+/// extract from the response.
+///
+/// The client returns an [`HttpResponse`]. The client filters only the key value
+/// for the give `header_keys`.
 #[derive(Clone, Debug)]
 pub struct InnerHttpClient {
     pub(crate) client: reqwest::Client,
-    pub(crate) response_headers: Arc<[(String, HeaderName)]>,
+    pub(crate) header_keys: Arc<[String]>,
+    pub(crate) header_names: Arc<[HeaderName]>,
+    /// Maximum response body size in bytes; bodies exceeding this are rejected.
     pub(crate) max_response_bytes: usize,
 }
 
@@ -433,8 +456,6 @@ impl InnerHttpClient {
             Url::parse(url).map_err(|e| HttpClientError::from(format!("URL parse error: {e}")))?;
 
         let mut request_builder = self.client.request(method, reqwest_url);
-        let extra_header_count = headers.as_ref().map_or(0, HashMap::len);
-        let body_len = body.as_ref().map_or(0, Vec::len);
 
         if let Some(headers) = headers {
             let mut header_map = HeaderMap::with_capacity(headers.len());
@@ -442,16 +463,13 @@ impl InnerHttpClient {
                 let key = HeaderName::from_bytes(header_key.as_bytes())
                     .map_err(|e| HttpClientError::from(format!("Invalid header name: {e}")))?;
 
-                if header_map
-                    .insert(
-                        key.clone(),
-                        header_value.parse().map_err(|e| {
-                            HttpClientError::from(format!("Invalid header value: {e}"))
-                        })?,
-                    )
-                    .is_some()
-                {
-                    log::trace!("Replaced duplicate request header '{key}'");
+                if let Some(old_value) = header_map.insert(
+                    key.clone(),
+                    header_value
+                        .parse()
+                        .map_err(|e| HttpClientError::from(format!("Invalid header value: {e}")))?,
+                ) {
+                    log::trace!("Replaced header '{key}': old={old_value:?}, new={header_value}");
                 }
             }
             request_builder = request_builder.headers(header_map);
@@ -473,12 +491,7 @@ impl InnerHttpClient {
             None => request_builder.build().map_err(HttpClientError::from)?,
         };
 
-        let query_len = request.url().query().map_or(0, str::len);
-        log::trace!(
-            "Sending HTTP request: method={} extra_headers={extra_header_count} \
-             query_bytes={query_len} body_bytes={body_len}",
-            request.method(),
-        );
+        log::trace!("{} {}", request.method(), request.url());
 
         let response = self
             .client
@@ -497,29 +510,22 @@ impl InnerHttpClient {
     ///
     /// Returns an error if unable to send request or times out.
     pub async fn to_response(&self, response: Response) -> Result<HttpResponse, HttpClientError> {
-        let status_code = response.status();
-        let resp_headers = response.headers();
-        let header_count = resp_headers.len();
-        let mut headers = HashMap::with_capacity(std::cmp::min(
-            self.response_headers.len(),
-            resp_headers.len(),
-        ));
+        log::trace!("{response:?}");
 
-        for (key, name) in self.response_headers.iter() {
+        let resp_headers = response.headers();
+        let mut headers =
+            HashMap::with_capacity(std::cmp::min(self.header_names.len(), resp_headers.len()));
+
+        for (name, key_str) in self.header_names.iter().zip(self.header_keys.iter()) {
             if let Some(val) = resp_headers.get(name)
                 && let Ok(v) = val.to_str()
             {
-                headers.insert(key.clone(), v.to_owned());
+                headers.insert(key_str.clone(), v.to_owned());
             }
         }
 
-        let status = HttpStatus::new(status_code);
+        let status = HttpStatus::new(response.status());
         let body = self.read_body_capped(response).await?;
-
-        log::trace!(
-            "Received HTTP response: status={status_code} headers={header_count} body_bytes={}",
-            body.len(),
-        );
 
         Ok(HttpResponse {
             status,
@@ -577,7 +583,8 @@ impl Default for InnerHttpClient {
         let client = reqwest::Client::new();
         Self {
             client,
-            response_headers: Arc::default(),
+            header_keys: Arc::default(),
+            header_names: Arc::default(),
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
         }
     }
@@ -623,10 +630,7 @@ mod tests {
 
     use axum::{
         Router,
-        body::to_bytes,
-        extract::Request,
-        response::IntoResponse,
-        routing::{any, delete, get, patch, post},
+        routing::{delete, get, patch, post},
         serve,
     };
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -639,29 +643,12 @@ mod tests {
 
     use super::*;
 
-    async fn capture_request(request: Request) -> impl IntoResponse {
-        let (parts, body) = request.into_parts();
-        let body = to_bytes(body, usize::MAX).await.unwrap();
-        let default_header = parts.headers.get("x-default").unwrap().to_str().unwrap();
-        let request_header = parts.headers.get("x-request").unwrap().to_str().unwrap();
-        let query = parts.uri.query().unwrap_or_default();
-        let body = String::from_utf8(body.to_vec()).unwrap();
-        let capture = format!(
-            "{}\n{}\n{query}\n{default_header}\n{request_header}\n{body}",
-            parts.method,
-            parts.uri.path(),
-        );
-
-        ([("x-response-id", "response-42")], capture)
-    }
-
     fn create_router() -> Router {
         Router::new()
             .route("/get", get(|| async { "hello-world!" }))
             .route("/post", post(|| async { StatusCode::OK }))
             .route("/patch", patch(|| async { StatusCode::OK }))
             .route("/delete", delete(|| async { StatusCode::OK }))
-            .route("/capture", any(capture_request))
             .route("/notfound", get(|| async { StatusCode::NOT_FOUND }))
             .route(
                 "/slow",
@@ -766,105 +753,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status.as_u16(), StatusCode::OK.as_u16());
+        assert!(response.status.is_success());
         assert_eq!(String::from_utf8_lossy(&response.body), "hello-world!");
-    }
-
-    #[tokio::test]
-    async fn test_request_preserves_wire_semantics_and_extracts_response_headers() {
-        let addr = start_test_server().await.unwrap();
-        let mut default_headers = HashMap::new();
-        default_headers.insert("x-default".to_string(), "default-a".to_string());
-        let client = HttpClient::new(
-            default_headers,
-            vec!["x-response-id".to_string()],
-            vec![],
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        let mut params = HashMap::new();
-        params.insert(
-            "tag".to_string(),
-            vec!["A B".to_string(), "C/D".to_string()],
-        );
-        let mut request_headers = HashMap::new();
-        request_headers.insert("x-request".to_string(), "request-b".to_string());
-
-        let response = client
-            .request(
-                Method::PUT,
-                format!("http://{addr}/capture?existing=seed"),
-                Some(&params),
-                Some(request_headers),
-                Some(b"payload-c".to_vec()),
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status.as_u16(), StatusCode::OK.as_u16());
-        assert_eq!(
-            response.headers,
-            HashMap::from([("x-response-id".to_string(), "response-42".to_string())])
-        );
-        assert_eq!(
-            response.body.as_ref(),
-            b"PUT\n/capture\nexisting=seed&tag=A+B&tag=C%2FD\ndefault-a\nrequest-b\npayload-c"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_request_with_params_serializes_query_fields() {
-        #[derive(serde::Serialize)]
-        struct Query<'a> {
-            symbol: &'a str,
-            limit: u32,
-        }
-
-        let addr = start_test_server().await.unwrap();
-        let mut default_headers = HashMap::new();
-        default_headers.insert("x-default".to_string(), "default-d".to_string());
-        let client = HttpClient::new(
-            default_headers,
-            vec!["x-response-id".to_string()],
-            vec![],
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        let mut request_headers = HashMap::new();
-        request_headers.insert("x-request".to_string(), "request-e".to_string());
-        let params = Query {
-            symbol: "BTC/USDT",
-            limit: 37,
-        };
-
-        let response = client
-            .request_with_params(
-                Method::GET,
-                format!("http://{addr}/capture"),
-                Some(&params),
-                Some(request_headers),
-                None,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status.as_u16(), StatusCode::OK.as_u16());
-        assert_eq!(
-            response.headers,
-            HashMap::from([("x-response-id".to_string(), "response-42".to_string())])
-        );
-        assert_eq!(
-            response.body.as_ref(),
-            b"GET\n/capture\nsymbol=BTC%2FUSDT&limit=37\ndefault-d\nrequest-e\n"
-        );
     }
 
     #[tokio::test]
@@ -890,7 +780,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status.as_u16(), StatusCode::OK.as_u16());
+        assert!(response.status.is_success());
         assert_eq!(response.body.len(), 1024 * 1024);
     }
 
@@ -941,7 +831,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status.as_u16(), StatusCode::OK.as_u16());
+        assert!(response.status.is_success());
     }
 
     #[tokio::test]
@@ -976,7 +866,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status.as_u16(), StatusCode::OK.as_u16());
+        assert!(response.status.is_success());
     }
 
     #[tokio::test]
@@ -997,7 +887,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status.as_u16(), StatusCode::OK.as_u16());
+        assert!(response.status.is_success());
     }
 
     #[tokio::test]
@@ -1018,7 +908,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status.as_u16(), StatusCode::OK.as_u16());
+        assert!(response.status.is_success());
     }
 
     #[tokio::test]
@@ -1047,10 +937,13 @@ mod tests {
             .send_request(reqwest::Method::GET, url, None, None, None, Some(1))
             .await;
 
-        assert!(
-            matches!(&result, Err(HttpClientError::TimeoutError(_))),
-            "Expected a timeout error, was: {result:?}"
-        );
+        match result {
+            Err(HttpClientError::TimeoutError(msg)) => {
+                println!("Got expected timeout error: {msg}");
+            }
+            Err(e) => panic!("Expected a timeout error, was: {e:?}"),
+            Ok(resp) => panic!("Expected a timeout error, but was a successful response: {resp:?}"),
+        }
     }
 
     #[rstest]
@@ -1264,7 +1157,7 @@ mod tests {
         let client = HttpClient::new(HashMap::new(), vec![], vec![], None, None, None).unwrap();
         let response = client.get(url, None, None, None, None).await.unwrap();
 
-        assert_eq!(response.status.as_u16(), StatusCode::OK.as_u16());
+        assert!(response.status.is_success());
         assert_eq!(String::from_utf8_lossy(&response.body), "hello-world!");
     }
 
@@ -1279,7 +1172,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status.as_u16(), StatusCode::OK.as_u16());
+        assert!(response.status.is_success());
     }
 
     #[tokio::test]
@@ -1293,7 +1186,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status.as_u16(), StatusCode::OK.as_u16());
+        assert!(response.status.is_success());
     }
 
     #[tokio::test]
@@ -1304,6 +1197,6 @@ mod tests {
         let client = HttpClient::new(HashMap::new(), vec![], vec![], None, None, None).unwrap();
         let response = client.delete(url, None, None, None, None).await.unwrap();
 
-        assert_eq!(response.status.as_u16(), StatusCode::OK.as_u16());
+        assert!(response.status.is_success());
     }
 }

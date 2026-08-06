@@ -115,16 +115,7 @@ curl_to_file() {
 }
 
 sha256_file() {
-  local path=$1
-
-  if command -v sha256sum > /dev/null; then
-    sha256sum "$path" | awk '{ print $1 }'
-  elif command -v shasum > /dev/null; then
-    shasum -a 256 "$path" | awk '{ print $1 }'
-  else
-    echo "::error::sha256sum or shasum not found."
-    exit 1
-  fi
+  sha256sum "$1" | awk '{print $1}'
 }
 
 load_manual_crate_publish_exceptions() {
@@ -379,8 +370,7 @@ verify_pypi_attestation() {
 }
 
 sparse_index_path() {
-  local crate_name
-  crate_name=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  local crate_name=${1,,}
   local crate_name_length=${#crate_name}
 
   case "$crate_name_length" in

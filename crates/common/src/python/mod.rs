@@ -56,7 +56,7 @@ pub fn config_error_to_pyvalue_err(e: ConfigError) -> PyErr {
     to_pyvalue_err(e)
 }
 
-/// Exposed through `nautilus_trader.common`.
+/// Loaded as `nautilus_pyo3.common`.
 ///
 /// # Errors
 ///

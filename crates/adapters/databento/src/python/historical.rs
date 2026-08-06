@@ -40,7 +40,7 @@ use crate::{
 /// Python wrapper for the core Databento historical client.
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.databento")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.databento")
 )]
 #[cfg_attr(
     feature = "python",

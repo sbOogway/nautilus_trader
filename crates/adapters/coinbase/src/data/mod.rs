@@ -49,7 +49,7 @@ use nautilus_core::{
     time::{AtomicTime, get_atomic_clock_realtime},
 };
 use nautilus_model::{
-    data::Data,
+    data::{Data, OrderBookDeltas_API},
     enums::{BarAggregation, BookType, OrderSide},
     identifiers::{ClientId, InstrumentId, Venue},
     instruments::{Instrument, InstrumentAny},
@@ -274,7 +274,9 @@ fn dispatch_ws_message(
             }
         }
         NautilusWsMessage::Deltas(deltas) => {
-            if let Err(e) = data_sender.send(DataEvent::Data(Data::Deltas(Box::new(deltas)))) {
+            if let Err(e) = data_sender.send(DataEvent::Data(Data::Deltas(
+                OrderBookDeltas_API::new(deltas),
+            ))) {
                 log::error!("Failed to send order book deltas: {e}");
             }
         }
@@ -1010,10 +1012,10 @@ impl DataClient for CoinbaseDataClient {
         let clock = self.clock;
 
         get_runtime().spawn(async move {
-            let now = jiff::Timestamp::now();
-            let end_secs = end.unwrap_or(now).as_second().to_string();
+            let now = chrono::Utc::now();
+            let end_secs = end.unwrap_or(now).timestamp().to_string();
             let start_secs = if let Some(s) = start {
-                s.as_second().to_string()
+                s.timestamp().to_string()
             } else {
                 let spec = bar_type.spec();
                 let step_secs = match spec.aggregation {
@@ -1023,7 +1025,7 @@ impl DataClient for CoinbaseDataClient {
                     _ => 60,
                 };
                 let count = limit.unwrap_or(300) as i64;
-                let end_ts = end.unwrap_or(now).as_second();
+                let end_ts = end.unwrap_or(now).timestamp();
                 (end_ts - count * step_secs).to_string()
             };
 

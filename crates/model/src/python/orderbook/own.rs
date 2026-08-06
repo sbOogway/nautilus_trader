@@ -27,10 +27,7 @@ use rust_decimal::Decimal;
 use crate::{
     enums::{OrderSide, OrderStatus, OrderType, TimeInForce},
     identifiers::{ClientOrderId, InstrumentId, TraderId, VenueOrderId},
-    orderbook::{
-        OwnBookOrder,
-        own::{OwnOrderBook, validate_accepted_buffer},
-    },
+    orderbook::{OwnBookOrder, own::OwnOrderBook},
     types::{Price, Quantity},
 };
 
@@ -294,10 +291,9 @@ impl OwnOrderBook {
         status: Option<HashSet<OrderStatus>>,
         accepted_buffer_ns: Option<u64>,
         ts_now: Option<u64>,
-    ) -> PyResult<IndexMap<Decimal, Vec<OwnBookOrder>>> {
-        validate_accepted_buffer(accepted_buffer_ns, ts_now).map_err(to_pyvalue_err)?;
+    ) -> IndexMap<Decimal, Vec<OwnBookOrder>> {
         let status_set: Option<AHashSet<OrderStatus>> = status.map(|s| s.into_iter().collect());
-        Ok(self.bids_as_map(status_set.as_ref(), accepted_buffer_ns, ts_now))
+        self.bids_as_map(status_set.as_ref(), accepted_buffer_ns, ts_now)
     }
 
     #[pyo3(name = "asks_to_dict")]
@@ -307,17 +303,15 @@ impl OwnOrderBook {
         status: Option<HashSet<OrderStatus>>,
         accepted_buffer_ns: Option<u64>,
         ts_now: Option<u64>,
-    ) -> PyResult<IndexMap<Decimal, Vec<OwnBookOrder>>> {
-        validate_accepted_buffer(accepted_buffer_ns, ts_now).map_err(to_pyvalue_err)?;
+    ) -> IndexMap<Decimal, Vec<OwnBookOrder>> {
         let status_set: Option<AHashSet<OrderStatus>> = status.map(|s| s.into_iter().collect());
-        Ok(self.asks_as_map(status_set.as_ref(), accepted_buffer_ns, ts_now))
+        self.asks_as_map(status_set.as_ref(), accepted_buffer_ns, ts_now)
     }
 
     /// Aggregates own bid quantities per price level, omitting zero-quantity levels.
     ///
-    /// Filters by `status` if provided, including only matching orders. When `ts_now` is provided,
-    /// only includes orders whose acceptance time plus `accepted_buffer_ns` is at or before
-    /// `ts_now`. When `ts_now` is `None`, acceptance-time filtering is disabled.
+    /// Filters by `status` if provided, including only matching orders. With `accepted_buffer_ns`,
+    /// only includes orders accepted at least that many nanoseconds before `ts_now` (defaults to now).
     ///
     /// If `group_size` is provided, groups quantities into price buckets.
     /// If `depth` is provided, limits the number of price levels returned.
@@ -330,23 +324,21 @@ impl OwnOrderBook {
         group_size: Option<Decimal>,
         accepted_buffer_ns: Option<u64>,
         ts_now: Option<u64>,
-    ) -> PyResult<IndexMap<Decimal, Decimal>> {
-        validate_accepted_buffer(accepted_buffer_ns, ts_now).map_err(to_pyvalue_err)?;
+    ) -> IndexMap<Decimal, Decimal> {
         let status_set: Option<AHashSet<OrderStatus>> = status.map(|s| s.into_iter().collect());
-        Ok(self.bid_quantity(
+        self.bid_quantity(
             status_set.as_ref(),
             depth,
             group_size,
             accepted_buffer_ns,
             ts_now,
-        ))
+        )
     }
 
     /// Aggregates own ask quantities per price level, omitting zero-quantity levels.
     ///
-    /// Filters by `status` if provided, including only matching orders. When `ts_now` is provided,
-    /// only includes orders whose acceptance time plus `accepted_buffer_ns` is at or before
-    /// `ts_now`. When `ts_now` is `None`, acceptance-time filtering is disabled.
+    /// Filters by `status` if provided, including only matching orders. With `accepted_buffer_ns`,
+    /// only includes orders accepted at least that many nanoseconds before `ts_now` (defaults to now).
     ///
     /// If `group_size` is provided, groups quantities into price buckets.
     /// If `depth` is provided, limits the number of price levels returned.
@@ -359,16 +351,15 @@ impl OwnOrderBook {
         group_size: Option<Decimal>,
         accepted_buffer_ns: Option<u64>,
         ts_now: Option<u64>,
-    ) -> PyResult<IndexMap<Decimal, Decimal>> {
-        validate_accepted_buffer(accepted_buffer_ns, ts_now).map_err(to_pyvalue_err)?;
+    ) -> IndexMap<Decimal, Decimal> {
         let status_set: Option<AHashSet<OrderStatus>> = status.map(|s| s.into_iter().collect());
-        Ok(self.ask_quantity(
+        self.ask_quantity(
             status_set.as_ref(),
             depth,
             group_size,
             accepted_buffer_ns,
             ts_now,
-        ))
+        )
     }
 
     /// Returns a new own book containing this books orders plus parity-transformed opposite orders.

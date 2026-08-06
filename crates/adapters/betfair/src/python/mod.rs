@@ -83,7 +83,7 @@ fn extract_betfair_exec_config(
 
 /// Betfair adapter Python module.
 ///
-/// Exposed through `nautilus_trader.adapters.betfair`.
+/// Loaded as `nautilus_pyo3.betfair`.
 ///
 /// # Errors
 ///

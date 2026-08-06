@@ -21,8 +21,8 @@ use std::{
     rc::Rc,
 };
 
+use chrono::TimeDelta;
 use indexmap::{IndexMap, IndexSet};
-use jiff::SignedDuration;
 use nautilus_common::{
     cache::Cache,
     clock::Clock,
@@ -108,7 +108,7 @@ pub struct OrderMatchingEngine {
     last_bar_ask: Option<Bar>,
     fill_at_market: bool,
     execution_bar_types: IndexMap<InstrumentId, BarType>,
-    execution_bar_deltas: IndexMap<BarType, SignedDuration>,
+    execution_bar_deltas: IndexMap<BarType, TimeDelta>,
     account_ids: IndexMap<TraderId, AccountId>,
     cached_filled_qty: IndexMap<ClientOrderId, Quantity>,
     post_match_order_ids: IndexSet<ClientOrderId>,
@@ -3330,7 +3330,7 @@ impl OrderMatchingEngine {
             return;
         }
 
-        let order = match self
+        let mut order = match self
             .cache
             .borrow()
             .order(&command.client_order_id)
@@ -3347,7 +3347,7 @@ impl OrderMatchingEngine {
         };
 
         let update_success = self.update_order(
-            &order,
+            &mut order,
             command.quantity,
             command.price,
             command.trigger_price,
@@ -4309,7 +4309,7 @@ impl OrderMatchingEngine {
                 }
 
                 // Save original book prices BEFORE any fill price modifications for consumption tracking,
-                // since the MAKER loop below may adjust fill prices. Consumption should be
+                // since the TAKER and MAKER loops below may adjust fill prices. Consumption should be
                 // tracked against the original book price levels where liquidity was sourced from.
                 let book_prices: Vec<Price> = if self.config.liquidity_consumption {
                     fills.iter().map(|(px, _)| *px).collect()
@@ -4321,6 +4321,39 @@ impl OrderMatchingEngine {
                 } else {
                     Some(&book_prices)
                 };
+
+                // check if trigger price exists
+                if let Some(triggered_price) = order.trigger_price() {
+                    // Filling as TAKER from trigger
+                    if order
+                        .liquidity_side()
+                        .is_some_and(|liquidity_side| liquidity_side == LiquiditySide::Taker)
+                    {
+                        if order.order_side() == OrderSide::Sell && order_price > triggered_price {
+                            // manually change the fills index 0
+                            let first_fill = fills.first().unwrap();
+                            let triggered_qty = first_fill.1;
+                            fills[0] = (triggered_price, triggered_qty);
+                            self.target_bid = self.core.bid;
+                            self.target_ask = self.core.ask;
+                            self.target_last = self.core.last;
+                            self.core.set_ask_raw(order_price);
+                            self.core.set_last_raw(order_price);
+                        } else if order.order_side() == OrderSide::Buy
+                            && order_price < triggered_price
+                        {
+                            // manually change the fills index 0
+                            let first_fill = fills.first().unwrap();
+                            let triggered_qty = first_fill.1;
+                            fills[0] = (triggered_price, triggered_qty);
+                            self.target_bid = self.core.bid;
+                            self.target_ask = self.core.ask;
+                            self.target_last = self.core.last;
+                            self.core.set_bid_raw(order_price);
+                            self.core.set_last_raw(order_price);
+                        }
+                    }
+                }
 
                 // Filling as MAKER from trigger
                 if order
@@ -5206,15 +5239,14 @@ impl OrderMatchingEngine {
         }
 
         let fee_order;
-        let commission_order = {
-            // `order` is a stale pre-fill clone: give fee models the current
-            // pre-fill `filled_qty` (e.g. `FixedFeeModel` charges once per order).
-            let mut cloned = order.clone();
-            write_filled_qty(&mut cloned, new_filled_qty.saturating_sub(last_qty));
-            if order.liquidity_side() != Some(liquidity_side) {
+        let commission_order = if order.liquidity_side() == Some(liquidity_side) {
+            order
+        } else {
+            fee_order = {
+                let mut cloned = order.clone();
                 cloned.set_liquidity_side(liquidity_side);
-            }
-            fee_order = cloned;
+                cloned
+            };
             &fee_order
         };
 
@@ -5346,7 +5378,7 @@ impl OrderMatchingEngine {
                 ContingencyType::Ouo => {
                     if let Some(linked_orders_ids) = order.linked_order_ids() {
                         for client_order_id in linked_orders_ids {
-                            let child_order = match self.cache.borrow().order(client_order_id) {
+                            let mut child_order = match self.cache.borrow().order(client_order_id) {
                                 Some(child_order) => child_order.clone(),
                                 None => anyhow::bail!("Order {client_order_id} not found in cache"),
                             };
@@ -5373,7 +5405,7 @@ impl OrderMatchingEngine {
                                 let price = child_order.price();
                                 let trigger_price = child_order.trigger_price();
                                 self.update_order(
-                                    &child_order,
+                                    &mut child_order,
                                     Some(post_fill_leaves_qty),
                                     price,
                                     trigger_price,
@@ -5533,7 +5565,7 @@ impl OrderMatchingEngine {
 
     fn update_stop_limit_order(
         &mut self,
-        order: &OrderAny,
+        order: &mut OrderAny,
         quantity: Quantity,
         price: Price,
         trigger_price: Price,
@@ -5564,13 +5596,16 @@ impl OrderMatchingEngine {
                     return ModifyOutcome::Rejected;
                 }
                 self.generate_order_updated(order, quantity, Some(price), None, None);
+                order.set_liquidity_side(LiquiditySide::Taker);
 
-                // Re-read from cache to get the order with events applied
-                let client_order_id = order.client_order_id();
-                if let Some(mut order) = self.cache.borrow_mut().order_mut(&client_order_id) {
-                    order.set_liquidity_side(LiquiditySide::Taker);
+                if let Err(e) = self
+                    .cache
+                    .borrow_mut()
+                    .add_order(order.clone(), None, None, false)
+                {
+                    log::debug!("Order already in cache: {e}");
                 }
-                self.fill_limit_order(client_order_id);
+                self.fill_limit_order(order.client_order_id());
                 return ModifyOutcome::Applied;
             }
         } else {
@@ -5655,7 +5690,7 @@ impl OrderMatchingEngine {
 
     fn update_limit_if_touched_order(
         &mut self,
-        order: &OrderAny,
+        order: &mut OrderAny,
         quantity: Quantity,
         price: Price,
         trigger_price: Price,
@@ -5687,13 +5722,8 @@ impl OrderMatchingEngine {
                     return ModifyOutcome::Rejected;
                 }
                 self.generate_order_updated(order, quantity, Some(price), None, None);
-
-                // Re-read from cache to get the order with events applied
-                let client_order_id = order.client_order_id();
-                if let Some(mut order) = self.cache.borrow_mut().order_mut(&client_order_id) {
-                    order.set_liquidity_side(LiquiditySide::Taker);
-                }
-                self.fill_limit_order(client_order_id);
+                order.set_liquidity_side(LiquiditySide::Taker);
+                self.fill_limit_order(order.client_order_id());
                 return ModifyOutcome::Applied;
             }
         } else {
@@ -5856,16 +5886,7 @@ impl OrderMatchingEngine {
     fn cancel_order(&mut self, order: &OrderAny, cancel_contingencies: Option<bool>) {
         let cancel_contingencies = cancel_contingencies.unwrap_or(true);
 
-        if order.is_active_local()
-            && !matches!(
-                (order.status(), order.order_type(), order.time_in_force()),
-                (
-                    OrderStatus::Initialized | OrderStatus::Released,
-                    OrderType::Market,
-                    TimeInForce::Ioc | TimeInForce::Fok
-                )
-            )
-        {
+        if order.is_active_local() {
             log::error!(
                 "Cannot cancel an order with {} from the matching engine",
                 order.status()
@@ -5893,7 +5914,7 @@ impl OrderMatchingEngine {
 
     fn update_order(
         &mut self,
-        order: &OrderAny,
+        order: &mut OrderAny,
         quantity: Option<Quantity>,
         price: Option<Price>,
         trigger_price: Option<Price>,
@@ -6081,11 +6102,6 @@ impl OrderMatchingEngine {
             }
         };
 
-        if order.is_closed() {
-            log::debug!("Cannot trigger stop order: {client_order_id} already closed");
-            return;
-        }
-
         match order.order_type() {
             OrderType::StopLimit | OrderType::LimitIfTouched | OrderType::TrailingStopLimit => {
                 self.trigger_limit_style_stop_order(client_order_id, order);
@@ -6247,7 +6263,7 @@ impl OrderMatchingEngine {
             let parent_leaves_qty = parent_quantity.saturating_sub(parent_filled_qty);
 
             for client_order_id in linked_order_ids {
-                let child_order = match self.cache.borrow().order(client_order_id) {
+                let mut child_order = match self.cache.borrow().order(client_order_id) {
                     Some(order) => order.clone(),
                     None => panic!("Order {client_order_id} not found in cache."),
                 };
@@ -6273,7 +6289,7 @@ impl OrderMatchingEngine {
                         let price = child_order.price();
                         let trigger_price = child_order.trigger_price();
                         self.update_order(
-                            &child_order,
+                            &mut child_order,
                             Some(parent_leaves_qty),
                             price,
                             trigger_price,
@@ -6608,24 +6624,6 @@ where
         PostMatchOrderAction::UpdateTrailing(clone_order(order))
     } else {
         PostMatchOrderAction::NoMaintenance
-    }
-}
-
-/// Writes `filled_qty` directly onto an order clone's core state.
-///
-/// Used to present fee models with the current pre-fill quantity when the
-/// order passed to the fill path is a stale clone (see `fill_order`).
-fn write_filled_qty(order: &mut OrderAny, filled_qty: Quantity) {
-    match order {
-        OrderAny::Limit(o) => o.filled_qty = filled_qty,
-        OrderAny::LimitIfTouched(o) => o.filled_qty = filled_qty,
-        OrderAny::Market(o) => o.filled_qty = filled_qty,
-        OrderAny::MarketIfTouched(o) => o.filled_qty = filled_qty,
-        OrderAny::MarketToLimit(o) => o.filled_qty = filled_qty,
-        OrderAny::StopLimit(o) => o.filled_qty = filled_qty,
-        OrderAny::StopMarket(o) => o.filled_qty = filled_qty,
-        OrderAny::TrailingStopLimit(o) => o.filled_qty = filled_qty,
-        OrderAny::TrailingStopMarket(o) => o.filled_qty = filled_qty,
     }
 }
 
@@ -7054,86 +7052,6 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(engine.cached_filled_qty_len(), 0);
         assert!(events.borrow().is_empty());
-    }
-
-    fn collision_engine() -> (OrderMatchingEngine, Rc<RefCell<Cache>>, VenueOrderId) {
-        let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt());
-        let cache = Rc::new(RefCell::new(Cache::default()));
-        let venue_order_id = VenueOrderId::from(format!("{}-1-1", instrument.id().venue));
-        cache
-            .borrow_mut()
-            .add_venue_order_id(&ClientOrderId::from("O-OWNER"), &venue_order_id, false)
-            .unwrap();
-        let engine = OrderMatchingEngine::new(
-            instrument,
-            1,
-            FillModelHandle::default(),
-            FeeModelAny::default().into(),
-            BookType::L1_MBP,
-            OmsType::Netting,
-            AccountType::Margin,
-            Rc::new(RefCell::new(TestClock::new())),
-            Rc::clone(&cache),
-            Default::default(),
-        );
-
-        (engine, cache, venue_order_id)
-    }
-
-    #[rstest]
-    #[case(OrderType::Market)]
-    #[case(OrderType::MarketToLimit)]
-    fn test_market_collision_probes_and_fills_with_default_ack_config(
-        #[case] order_type: OrderType,
-    ) {
-        let (mut engine, cache, venue_order_id) = collision_engine();
-        assert!(!engine.config.use_market_order_acks);
-        let quote = QuoteTick::new(
-            engine.instrument.id(),
-            Price::from("1499.00"),
-            Price::from("1500.00"),
-            Quantity::from("10.000"),
-            Quantity::from("10.000"),
-            UnixNanos::default(),
-            UnixNanos::default(),
-        );
-        engine.process_quote_tick(&quote);
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let events_handler = Rc::clone(&events);
-        engine.set_event_handler(Rc::new(move |event| {
-            events_handler.borrow_mut().push(event);
-        }));
-        let mut order = OrderTestBuilder::new(order_type)
-            .instrument_id(engine.instrument.id())
-            .client_order_id(ClientOrderId::from("O-CLAIMANT"))
-            .side(OrderSide::Buy)
-            .quantity(Quantity::from("1.000"))
-            .submit(true)
-            .build();
-
-        engine.process_order(&mut order, AccountId::from("ACCOUNT-001"));
-
-        assert!(
-            !events
-                .borrow()
-                .iter()
-                .any(|event| matches!(event, OrderEventAny::Rejected(_)))
-        );
-        assert!(
-            events
-                .borrow()
-                .iter()
-                .any(|event| matches!(event, OrderEventAny::Filled(_)))
-        );
-        assert!(cache.borrow().order_exists(&order.client_order_id()));
-        assert_eq!(
-            cache.borrow().client_order_id(&venue_order_id),
-            Some(&ClientOrderId::from("O-OWNER"))
-        );
-        assert_eq!(
-            cache.borrow().venue_order_id(&order.client_order_id()),
-            Some(&VenueOrderId::from(format!("{}-1-2", engine.venue)))
-        );
     }
 
     struct RecordingFeeModel {
@@ -7783,7 +7701,7 @@ mod tests {
     }
 
     // Replays real GLBX MBO flow (records 9150..10650 of
-    // test_data/databento/esh4-glbx-mdp3-20231225.mbo.dbn.zst as JSON),
+    // tests/test_data/databento/esh4-glbx-mdp3-20231225.mbo.dbn.zst as JSON),
     // joining the touch periodically; the mid-stream start also exercises
     // unseen-id ignore paths
     #[rstest]

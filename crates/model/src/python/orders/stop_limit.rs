@@ -460,7 +460,7 @@ impl StopLimitOrder {
             .map(|vec| vec.iter().map(|s| Ustr::from(s)).collect());
         let init_id = get_required_parsed(values, "init_id", |s| s.parse::<UUID4>())?;
         let ts_init = get_required::<u64>(values, "ts_init")?;
-        let stop_limit_order = Self::new_checked(
+        let stop_limit_order = Self::new(
             trader_id,
             strategy_id,
             instrument_id,
@@ -488,8 +488,7 @@ impl StopLimitOrder {
             tags,
             init_id,
             ts_init.into(),
-        )
-        .map_err(to_pyvalue_err)?;
+        );
         Ok(stop_limit_order)
     }
 
@@ -530,7 +529,7 @@ impl StopLimitOrder {
         )?;
         self.avg_px.map_or_else(
             || dict.set_item("avg_px", py.None()),
-            |x| dict.set_item("avg_px", x.to_string()),
+            |x| dict.set_item("avg_px", x),
         )?;
         self.position_id.map_or_else(
             || dict.set_item("position_id", py.None()),
@@ -542,7 +541,7 @@ impl StopLimitOrder {
         )?;
         self.slippage.map_or_else(
             || dict.set_item("slippage", py.None()),
-            |x| dict.set_item("slippage", x.to_string()),
+            |x| dict.set_item("slippage", x),
         )?;
         self.account_id.map_or_else(
             || dict.set_item("account_id", py.None()),

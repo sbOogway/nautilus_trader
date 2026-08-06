@@ -29,7 +29,7 @@ use std::{
 };
 
 use ahash::{AHashMap, AHashSet};
-use jiff::Timestamp;
+use chrono::{DateTime, Utc};
 use nautilus_common::cache::InstrumentLookupError;
 use nautilus_core::{
     AtomicMap, AtomicTime, consts::NAUTILUS_USER_AGENT, env::get_or_env_var_opt, nanos::UnixNanos,
@@ -64,9 +64,9 @@ use super::{
         BybitInstrumentSpot, BybitInstrumentSpotResponse, BybitKlinesResponse,
         BybitNoConvertRepayResponse, BybitOpenOrdersResponse, BybitOrder,
         BybitOrderHistoryResponse, BybitOrderbookResponse, BybitPlaceOrderResponse,
-        BybitPositionListResponse, BybitRepayResponse, BybitServerTimeResponse,
-        BybitSetLeverageResponse, BybitSetMarginModeResponse, BybitSetTradingStopResponse,
-        BybitSubApiKeyInfo, BybitSubApiKeysResponse, BybitSubMember, BybitSubMembersPagedResponse,
+        BybitPositionListResponse, BybitServerTimeResponse, BybitSetLeverageResponse,
+        BybitSetMarginModeResponse, BybitSetTradingStopResponse, BybitSubApiKeyInfo,
+        BybitSubApiKeysResponse, BybitSubMember, BybitSubMembersPagedResponse,
         BybitSubMembersResponse, BybitSwitchModeResponse, BybitTickerData, BybitTickerOption,
         BybitTickersOptionResponse, BybitTradeHistoryResponse, BybitTradesResponse,
         BybitUpdateMasterApiResponse, BybitUpdateSubApiResponse, BybitWalletBalanceResponse,
@@ -80,10 +80,10 @@ use super::{
         BybitInstrumentsInfoParams, BybitKlinesParams, BybitKlinesParamsBuilder,
         BybitNativeTpSlParams, BybitNoConvertRepayParamsBuilder, BybitOpenOrdersParamsBuilder,
         BybitOrderHistoryParamsBuilder, BybitOrderbookParams, BybitOrderbookParamsBuilder,
-        BybitPlaceOrderParamsBuilder, BybitPositionListParams, BybitRepayParamsBuilder,
-        BybitSetLeverageParamsBuilder, BybitSetMarginModeParamsBuilder, BybitSetTradingStopParams,
-        BybitSubApiKeysParams, BybitSubMembersPageParams, BybitSwitchModeParamsBuilder,
-        BybitTickersParams, BybitTradeHistoryParams, BybitTradesParams, BybitTradesParamsBuilder,
+        BybitPlaceOrderParamsBuilder, BybitPositionListParams, BybitSetLeverageParamsBuilder,
+        BybitSetMarginModeParamsBuilder, BybitSetTradingStopParams, BybitSubApiKeysParams,
+        BybitSubMembersPageParams, BybitSwitchModeParamsBuilder, BybitTickersParams,
+        BybitTradeHistoryParams, BybitTradesParams, BybitTradesParamsBuilder,
         BybitUpdateMasterApiParams, BybitUpdateSubApiParams, BybitWalletBalanceParams,
     },
 };
@@ -93,7 +93,7 @@ use crate::common::{
     enums::{
         BybitAccountType, BybitBboSideType, BybitContractType, BybitEnvironment, BybitMarginMode,
         BybitOpenOnly, BybitOrderFilter, BybitOrderSide, BybitOrderType, BybitPositionIdx,
-        BybitPositionMode, BybitProductType, BybitRepayStatus, BybitTpSlMode,
+        BybitPositionMode, BybitProductType, BybitTpSlMode,
     },
     models::{BybitCursorListResponse, BybitErrorCheck, BybitResponseCheck},
     parse::{
@@ -139,8 +139,7 @@ pub static BYBIT_REPAY_QUOTA: LazyLock<Quota> = LazyLock::new(|| {
 });
 
 const BYBIT_GLOBAL_RATE_KEY: &str = "bybit:global";
-const BYBIT_REPAY_ROUTE_KEY: &str = "bybit:/v5/account/repay";
-const BYBIT_NO_CONVERT_REPAY_ROUTE_KEY: &str = "bybit:/v5/account/no-convert-repay";
+const BYBIT_REPAY_ROUTE_KEY: &str = "bybit:/v5/account/no-convert-repay";
 
 /// Raw HTTP client for low-level Bybit API operations.
 ///
@@ -148,7 +147,7 @@ const BYBIT_NO_CONVERT_REPAY_ROUTE_KEY: &str = "bybit:/v5/account/no-convert-rep
 /// returning venue-specific response types. It does not parse to Nautilus domain types.
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.bybit", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -385,10 +384,6 @@ impl BybitRawHttpClient {
         vec![
             (BYBIT_GLOBAL_RATE_KEY.to_string(), *BYBIT_REST_QUOTA),
             (BYBIT_REPAY_ROUTE_KEY.to_string(), *BYBIT_REPAY_QUOTA),
-            (
-                BYBIT_NO_CONVERT_REPAY_ROUTE_KEY.to_string(),
-                *BYBIT_REPAY_QUOTA,
-            ),
         ]
     }
 
@@ -1347,7 +1342,7 @@ impl BybitRawHttpClient {
     /// Returns an error if:
     /// - Credentials are missing.
     /// - The request fails.
-    /// - Called during the hourly interest-calculation window (mm:04:00-mm:05:30 UTC each hour).
+    /// - Called between 04:00-05:30 UTC (interest calculation window).
     /// - Insufficient spot balance for repayment.
     ///
     /// # Panics
@@ -1386,58 +1381,6 @@ impl BybitRawHttpClient {
                 Some(body),
                 true,
             )
-            .await;
-
-        if let Err(ref e) = result
-            && let Ok(params_json) = serde_json::to_string(&params)
-        {
-            log::error!("Repay request failed with params {params_json}: {e}");
-        }
-
-        result
-    }
-
-    /// Manually repays borrowed coins, converting other assets if required.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Credentials are missing.
-    /// - The request fails.
-    /// - Called during the hourly interest-calculation window (mm:04:00-mm:05:30 UTC each hour).
-    /// - Insufficient balance for repayment.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the parameter builder fails (should never happen with valid inputs).
-    ///
-    /// # References
-    ///
-    /// - <https://bybit-exchange.github.io/docs/v5/account/repay>
-    pub async fn repay(
-        &self,
-        coin: Option<&str>,
-        amount: Option<&str>,
-    ) -> Result<BybitRepayResponse, BybitHttpError> {
-        let mut builder = BybitRepayParamsBuilder::default();
-
-        if let Some(coin) = coin {
-            builder.coin(coin.to_string());
-        }
-
-        if let Some(amt) = amount {
-            builder.amount(amt.to_string());
-        }
-
-        let params = builder.build().expect("Failed to build BybitRepayParams");
-
-        if let Ok(params_json) = serde_json::to_string(&params) {
-            log::debug!("Repay request params: {params_json}");
-        }
-
-        let body = serde_json::to_vec(&params)?;
-        let result = self
-            .send_request::<_, ()>(Method::POST, "/v5/account/repay", None, Some(body), true)
             .await;
 
         if let Err(ref e) = result
@@ -1525,7 +1468,7 @@ impl BybitRawHttpClient {
 /// Provides a HTTP client for connecting to the [Bybit](https://bybit.com) REST API.
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.bybit", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -2315,7 +2258,7 @@ impl BybitHttpClient {
     /// Returns an error if:
     /// - Credentials are missing.
     /// - The request fails.
-    /// - Called during the hourly interest-calculation window (mm:04:00-mm:05:30 UTC each hour).
+    /// - Called between 04:00-05:30 UTC (interest calculation window).
     /// - Insufficient spot balance for repayment.
     pub async fn repay_spot_borrow(
         &self,
@@ -2323,55 +2266,10 @@ impl BybitHttpClient {
         amount: Option<Quantity>,
     ) -> anyhow::Result<BybitNoConvertRepayResponse> {
         let amount_str = amount.as_ref().map(|q| q.to_string());
-        let response = self
-            .inner
+        self.inner
             .no_convert_repay(coin, amount_str.as_deref())
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to repay spot borrow for {coin}: {e}"))?;
-        Self::ensure_repay_accepted(coin, response.result.result_status)?;
-        Ok(response)
-    }
-
-    /// Repays spot borrows for a specific coin, converting other assets if required.
-    ///
-    /// Unlike [`Self::repay_spot_borrow`], this uses the venue's manual repay endpoint,
-    /// which may draw on other holdings when the debt coin's spot balance is insufficient.
-    ///
-    /// # Parameters
-    ///
-    /// - `coin`: The coin to repay (e.g., "BTC", "ETH")
-    /// - `amount`: Optional amount to repay. If None, repays all outstanding borrows.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Credentials are missing.
-    /// - The request fails.
-    /// - Called during the hourly interest-calculation window (mm:04:00-mm:05:30 UTC each hour).
-    /// - Insufficient balance for repayment.
-    pub async fn repay_spot_borrow_with_conversion(
-        &self,
-        coin: &str,
-        amount: Option<Quantity>,
-    ) -> anyhow::Result<BybitRepayResponse> {
-        let amount_str = amount.as_ref().map(|q| q.to_string());
-        let response = self
-            .inner
-            .repay(Some(coin), amount_str.as_deref())
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to repay spot borrow (with conversion) for {coin}: {e}")
-            })?;
-        Self::ensure_repay_accepted(coin, response.result.result_status)?;
-        Ok(response)
-    }
-
-    fn ensure_repay_accepted(coin: &str, status: BybitRepayStatus) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            status != BybitRepayStatus::Failed,
-            "Bybit repay for {coin} returned result status {status}"
-        );
-        Ok(())
+            .map_err(|e| anyhow::anyhow!("Failed to repay spot borrow for {coin}: {e}"))
     }
 
     /// Generate SPOT position reports from wallet balances.
@@ -3824,22 +3722,22 @@ impl BybitHttpClient {
         &self,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<FundingRateUpdate>> {
         let instrument = self.instrument_from_cache_by_id(instrument_id)?;
         let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())?;
 
-        let start_ms = start.map(|dt| dt.as_millisecond());
+        let start_ms = start.map(|dt| dt.timestamp_millis());
         let mut seen_timestamps: AHashSet<i64> = AHashSet::new();
 
         let mut raw_funding_rates = Vec::new();
 
         // Bybit requires endTime when startTime is provided
         let mut current_end_ms = match (start, end) {
-            (Some(_), None) => Some(Timestamp::now().as_millisecond()),
-            _ => end.map(|dt| dt.as_millisecond()),
+            (Some(_), None) => Some(Utc::now().timestamp_millis()),
+            _ => end.map(|dt| dt.timestamp_millis()),
         };
 
         loop {
@@ -4000,8 +3898,8 @@ impl BybitHttpClient {
         &self,
         product_type: BybitProductType,
         bar_type: BarType,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
         timestamp_on_close: bool,
     ) -> anyhow::Result<Vec<Bar>> {
@@ -4015,7 +3913,7 @@ impl BybitHttpClient {
             bar_type.spec().step.get() as u64,
         )?;
 
-        let start_ms = start.map(|dt| dt.as_millisecond());
+        let start_ms = start.map(|dt| dt.timestamp_millis());
         let mut seen_timestamps: AHashSet<i64> = AHashSet::new();
         let current_time_ms = get_atomic_clock_realtime().get_time_ms() as i64;
 
@@ -4030,7 +3928,7 @@ impl BybitHttpClient {
         //   After reverse + flatten: [T=1000..1999, T=2000..2999] ✓ chronological
         let mut pages: Vec<Vec<Bar>> = Vec::new();
         let mut total_bars = 0usize;
-        let mut current_end = end.map(|dt| dt.as_millisecond());
+        let mut current_end = end.map(|dt| dt.timestamp_millis());
         let mut page_count = 0;
 
         loop {
@@ -4235,8 +4133,8 @@ impl BybitHttpClient {
         product_type: BybitProductType,
         instrument_id: Option<InstrumentId>,
         open_only: bool,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
         // Extract symbol parameter from instrument_id if provided
@@ -4471,11 +4369,11 @@ impl BybitHttpClient {
                         }
 
                         if let Some(start) = start {
-                            history_params.start_time(start.as_millisecond());
+                            history_params.start_time(start.timestamp_millis());
                         }
 
                         if let Some(end) = end {
-                            history_params.end_time(end.as_millisecond());
+                            history_params.end_time(end.timestamp_millis());
                         }
                         history_params.limit(page_limit as u32);
 

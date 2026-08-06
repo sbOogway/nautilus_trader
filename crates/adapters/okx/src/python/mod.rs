@@ -112,7 +112,7 @@ fn extract_okx_exec_config(py: Python<'_>, config: Py<PyAny>) -> PyResult<Box<dy
     }
 }
 
-/// Exposed through `nautilus_trader.adapters.okx`.
+/// Loaded as `nautilus_pyo3.okx`.
 ///
 /// # Errors
 ///
@@ -132,7 +132,6 @@ pub fn okx(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::common::enums::OKXMarginMode>()?;
     m.add_class::<crate::common::enums::OKXTradeMode>()?;
     m.add_class::<crate::common::enums::OKXOrderStatus>()?;
-    m.add_class::<crate::common::enums::OKXAlgoOrderStatus>()?;
     m.add_class::<crate::common::enums::OKXPositionMode>()?;
     m.add_class::<crate::common::enums::OKXVipLevel>()?;
     m.add_class::<crate::common::enums::OKXEnvironment>()?;

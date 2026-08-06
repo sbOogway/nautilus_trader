@@ -37,8 +37,12 @@ use pyo3::{
     types::{PyDict, PyTuple},
 };
 
+use super::data_to_pycapsule;
 use crate::{
-    data::bar::{Bar, BarSpecification, BarType},
+    data::{
+        Data,
+        bar::{Bar, BarSpecification, BarType},
+    },
     enums::{AggregationSource, BarAggregation, PriceType},
     identifiers::InstrumentId,
     python::common::PY_MODULE_MODEL,
@@ -104,7 +108,7 @@ impl BarSpecification {
         format!("{}:{}", PY_MODULE_MODEL, stringify!(BarSpecification))
     }
 
-    /// Returns the `SignedDuration` interval for this bar specification.
+    /// Returns the `TimeDelta` interval for this bar specification.
     ///
     /// # Notes
     ///
@@ -113,7 +117,7 @@ impl BarSpecification {
     /// since months and years have variable lengths.
     #[getter]
     #[pyo3(name = "timedelta")]
-    fn py_timedelta(&self) -> PyResult<jiff::SignedDuration> {
+    fn py_timedelta(&self) -> PyResult<chrono::TimeDelta> {
         if !self.is_time_aggregated() {
             return Err(to_pyvalue_err(format!(
                 "Timedelta not supported for aggregation type: {:?}",
@@ -168,21 +172,22 @@ impl BarSpecification {
             )));
         }
         let td = self.timedelta();
-        u64::try_from(td.as_nanos())
-            .map_err(|_| to_pyvalue_err(format!("Interval overflows nanoseconds, was {td:?}")))
+        td.num_nanoseconds()
+            .map(|ns| ns as u64)
+            .ok_or_else(|| to_pyvalue_err(format!("Interval overflows nanoseconds, was {td:?}")))
     }
 
     /// Creates a `BarSpecification` from a Python `timedelta` and price type.
     #[staticmethod]
     #[pyo3(name = "from_timedelta")]
-    fn py_from_timedelta(duration: jiff::SignedDuration, price_type: PriceType) -> PyResult<Self> {
-        if duration.as_millis() <= 0 {
+    fn py_from_timedelta(duration: chrono::TimeDelta, price_type: PriceType) -> PyResult<Self> {
+        if duration.num_milliseconds() <= 0 {
             return Err(to_pyvalue_err(format!(
                 "Duration must be positive, was {duration:?}"
             )));
         }
-        let total_secs_f64 = duration.as_millis() as f64 / 1000.0;
-        let days = duration.as_hours() / 24;
+        let total_secs_f64 = duration.num_milliseconds() as f64 / 1000.0;
+        let days = duration.num_days();
 
         let (step, aggregation) = if days >= 7 {
             (days / 7, BarAggregation::Week)
@@ -607,6 +612,26 @@ impl Bar {
     #[pyo3(name = "from_dict")]
     fn py_from_dict(py: Python<'_>, values: Py<PyDict>) -> PyResult<Self> {
         from_dict_pyo3(py, values)
+    }
+
+    /// Creates a `PyCapsule` containing a raw pointer to a `Data::Bar` object.
+    ///
+    /// This function takes the current object (assumed to be of a type that can be represented as
+    /// `Data::Bar`), and encapsulates a raw pointer to it within a `PyCapsule`.
+    ///
+    /// # Safety
+    ///
+    /// This function is safe as long as the following conditions are met:
+    /// - The `Data::Delta` object pointed to by the capsule must remain valid for the lifetime of the capsule.
+    /// - The consumer of the capsule must ensure proper handling to avoid dereferencing a dangling pointer.
+    ///
+    /// # Panics
+    ///
+    /// The function will panic if the `PyCapsule` creation fails, which can occur if the
+    /// `Data::Bar` object cannot be converted into a raw pointer.
+    #[pyo3(name = "as_pycapsule")]
+    fn py_as_pycapsule(&self, py: Python<'_>) -> Py<PyAny> {
+        data_to_pycapsule(py, Data::Bar(*self))
     }
 
     /// Return a dictionary representation of the object.

@@ -13,10 +13,8 @@ __all__ = [
     "AX_CLIENT_ID",
     "AX_VENUE",
     "AxDataClientConfig",
-    "AxDataClientFactory",
     "AxEnvironment",
     "AxExecClientConfig",
-    "AxExecutionClientFactory",
     "AxMarketDataLevel",
 ]
 
@@ -75,11 +73,6 @@ class AxDataClientConfig:
     def has_proxy_url(self) -> bool: ...
 
 @typing.final
-class AxDataClientFactory:
-    def __init__(self) -> None: ...
-    def name(self) -> str: ...
-
-@typing.final
 class AxExecClientConfig:
     @property
     def trader_id(self) -> model.TraderId: ...
@@ -131,11 +124,6 @@ class AxExecClientConfig:
     ) -> None: ...
     @property
     def has_proxy_url(self) -> bool: ...
-
-@typing.final
-class AxExecutionClientFactory:
-    def __init__(self) -> None: ...
-    def name(self) -> str: ...
 
 @typing.final
 class AxHttpClient:

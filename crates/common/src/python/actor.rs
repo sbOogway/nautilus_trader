@@ -23,8 +23,8 @@ use std::{
     rc::Rc,
 };
 
+use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
-use jiff::Timestamp;
 use nautilus_core::{
     from_pydict,
     nanos::UnixNanos,
@@ -822,21 +822,6 @@ impl PyDataActor {
         }
     }
 
-    /// Creates a new [`PyDataActor`] from a Python config object.
-    ///
-    /// Extracts a [`DataActorConfig`] when the object provides one, falling back to defaults
-    /// otherwise, and retains the original object so `.config` returns what the caller passed.
-    /// Subclass constructors share this so the base is built the same way everywhere.
-    #[must_use]
-    pub fn from_py_config(config: Option<Py<PyAny>>) -> Self {
-        let actor_config = config
-            .as_ref()
-            .and_then(|obj| Python::attach(|py| obj.extract::<DataActorConfig>(py).ok()));
-        let mut actor = Self::new(actor_config);
-        actor.set_config(config);
-        actor
-    }
-
     /// Sets the Python instance reference for method dispatch.
     ///
     /// This enables the `PyDataActor` to forward method calls (like `on_start`, `on_stop`)
@@ -1134,8 +1119,6 @@ impl DataActor for PyDataActorInner {
         Python::attach(|py| {
             let py_data: Py<PyAny> = if let Some(custom_data) = data.downcast_ref::<CustomData>() {
                 Py::new(py, custom_data.clone())?.into_any()
-            } else if let Some(custom_data) = data.downcast_ref::<Vec<CustomData>>() {
-                custom_data.clone().into_py_any(py)?
             } else {
                 anyhow::bail!("Failed to convert historical data to Python: unsupported type");
             };
@@ -1208,7 +1191,12 @@ impl PyDataActor {
     #[new]
     #[pyo3(signature = (config=None))]
     fn py_new(config: Option<Py<PyAny>>) -> Self {
-        Self::from_py_config(config)
+        let actor_config = config
+            .as_ref()
+            .and_then(|obj| Python::attach(|py| obj.extract::<DataActorConfig>(py).ok()));
+        let mut actor = Self::new(actor_config);
+        actor.set_config(config);
+        actor
     }
 
     #[pyo3(signature = (config=None))]
@@ -2086,8 +2074,8 @@ impl PyDataActor {
         py: Python<'_>,
         data_type: DataType,
         client_id: ClientId,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<usize>,
         params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
@@ -2112,8 +2100,8 @@ impl PyDataActor {
         &mut self,
         py: Python<'_>,
         instrument_id: InstrumentId,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
@@ -2136,8 +2124,8 @@ impl PyDataActor {
         &mut self,
         py: Python<'_>,
         venue: Option<Venue>,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
@@ -2179,8 +2167,8 @@ impl PyDataActor {
         &mut self,
         py: Python<'_>,
         instrument_id: InstrumentId,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
@@ -2207,8 +2195,8 @@ impl PyDataActor {
         &mut self,
         py: Python<'_>,
         instrument_id: InstrumentId,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<usize>,
         depth: Option<usize>,
         client_id: Option<ClientId>,
@@ -2238,8 +2226,8 @@ impl PyDataActor {
         &mut self,
         py: Python<'_>,
         instrument_id: InstrumentId,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
@@ -2266,8 +2254,8 @@ impl PyDataActor {
         &mut self,
         py: Python<'_>,
         instrument_id: InstrumentId,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
@@ -2294,8 +2282,8 @@ impl PyDataActor {
         &mut self,
         py: Python<'_>,
         instrument_id: InstrumentId,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
@@ -2322,8 +2310,8 @@ impl PyDataActor {
         &mut self,
         py: Python<'_>,
         bar_type: BarType,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
         params: Option<Py<PyDict>>,
@@ -2657,7 +2645,7 @@ mod tests {
         clock::TestClock,
         component::Component,
         enums::ComponentState,
-        messages::data::{BarsResponse, CustomDataResponse, QuotesResponse, TradesResponse},
+        messages::data::{BarsResponse, QuotesResponse, TradesResponse},
         runner::{SyncDataCommandSender, set_data_cmd_sender},
         signal::Signal,
         timer::TimeEvent,
@@ -4733,115 +4721,6 @@ class IndicatorEventActor:
             rust_actor.inner_mut().on_quote(&quote).unwrap();
 
             assert_eq!(python_method_call_count(&py_actor, py, "on_quote"), 3);
-        });
-    }
-
-    #[rstest]
-    fn test_python_dispatch_historical_custom_data_preserves_payload_shape(
-        clock: Rc<RefCell<TestClock>>,
-        cache: Rc<RefCell<Cache>>,
-        trader_id: TraderId,
-        client_id: ClientId,
-    ) {
-        pyo3::Python::initialize();
-
-        Python::attach(|py| {
-            let py_actor = create_tracking_python_actor(py).unwrap();
-            let mut rust_actor = PyDataActor::new(None);
-            rust_actor.set_python_instance(py_actor.clone_ref(py));
-            rust_actor.register(trader_id, clock, cache).unwrap();
-
-            let data = vec![
-                stub_custom_data(1, 42, None, None),
-                stub_custom_data(2, 84, None, None),
-            ];
-            let scalar = stub_custom_data(3, 126, None, None);
-            let scalar_response = CustomDataResponse::new(
-                UUID4::new(),
-                client_id,
-                None,
-                scalar.data_type.clone(),
-                scalar.clone(),
-                None,
-                None,
-                UnixNanos::default(),
-                None,
-            );
-
-            DataActor::handle_data_response(rust_actor.inner_mut(), &scalar_response);
-
-            let actual_scalar = py_actor
-                .call_method1(py, "last_call_args", ("on_historical_data",))
-                .unwrap()
-                .bind(py)
-                .get_item(0)
-                .unwrap()
-                .extract::<CustomData>()
-                .unwrap();
-
-            assert_eq!(
-                python_method_call_count(&py_actor, py, "on_historical_data"),
-                1
-            );
-            assert_eq!(actual_scalar, scalar);
-
-            let empty_response = CustomDataResponse::new(
-                UUID4::new(),
-                client_id,
-                None,
-                data[0].data_type.clone(),
-                Vec::<CustomData>::new(),
-                None,
-                None,
-                UnixNanos::default(),
-                None,
-            );
-
-            DataActor::handle_data_response(rust_actor.inner_mut(), &empty_response);
-
-            let empty = py_actor
-                .call_method1(py, "last_call_args", ("on_historical_data",))
-                .unwrap()
-                .bind(py)
-                .get_item(0)
-                .unwrap()
-                .extract::<Vec<CustomData>>()
-                .unwrap();
-
-            assert_eq!(
-                python_method_call_count(&py_actor, py, "on_historical_data"),
-                2
-            );
-            assert!(empty.is_empty());
-
-            let response = CustomDataResponse::new(
-                UUID4::new(),
-                client_id,
-                None,
-                data[0].data_type.clone(),
-                data.clone(),
-                None,
-                None,
-                UnixNanos::default(),
-                None,
-            );
-
-            DataActor::handle_data_response(rust_actor.inner_mut(), &response);
-
-            let actual = py_actor
-                .call_method1(py, "last_call_args", ("on_historical_data",))
-                .unwrap()
-                .bind(py)
-                .get_item(0)
-                .unwrap()
-                .extract::<Vec<CustomData>>()
-                .unwrap();
-
-            assert_eq!(
-                python_method_call_count(&py_actor, py, "on_historical_data"),
-                3
-            );
-            assert_eq!(actual, data);
         });
     }
 

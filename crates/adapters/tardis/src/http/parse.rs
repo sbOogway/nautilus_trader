@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use jiff::Timestamp;
+use chrono::{DateTime, Utc};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     identifiers::Symbol,
@@ -710,13 +710,15 @@ fn parse_fee_rate(value: f64) -> Decimal {
 /// Parses the given RFC 3339 datetime string (UTC) into a `UnixNanos` timestamp.
 /// If `value` is `None`, then defaults to the UNIX epoch (0 nanoseconds).
 /// Timestamps before UNIX epoch (negative values) default to 0.
-fn parse_datetime_to_unix_nanos(value: Option<Timestamp>) -> UnixNanos {
+fn parse_datetime_to_unix_nanos(value: Option<DateTime<Utc>>) -> UnixNanos {
     value
-        .map(|dt| match u64::try_from(dt.as_nanosecond()) {
-            Ok(nanos) => UnixNanos::from(nanos),
-            Err(_) => {
-                log::warn!("Timestamp {dt} is outside the UnixNanos range, defaulting to 0");
+        .map(|dt| {
+            let nanos = dt.timestamp_nanos_opt().unwrap_or(0);
+            if nanos < 0 {
+                log::warn!("Timestamp {dt} is before UNIX epoch, defaulting to 0");
                 UnixNanos::default()
+            } else {
+                UnixNanos::from(nanos as u64)
             }
         })
         .unwrap_or_default()

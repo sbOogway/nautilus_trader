@@ -32,7 +32,12 @@ use crate::{
 #[derive(Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.model", frozen, eq, from_py_object)
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.model",
+        frozen,
+        eq,
+        from_py_object
+    )
 )]
 #[cfg_attr(
     feature = "python",
@@ -200,7 +205,12 @@ impl Display for AccountBalance {
 #[derive(Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.model", frozen, eq, from_py_object)
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.model",
+        frozen,
+        eq,
+        from_py_object
+    )
 )]
 #[cfg_attr(
     feature = "python",

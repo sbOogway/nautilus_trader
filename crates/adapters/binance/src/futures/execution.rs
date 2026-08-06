@@ -31,7 +31,7 @@ use dashmap::DashMap;
 use nautilus_common::{
     cache::fifo::FifoCache,
     clients::ExecutionClient,
-    live::{get_runtime, runner::get_exec_event_sender, task::TaskHandles},
+    live::{get_runtime, runner::get_exec_event_sender},
     messages::execution::{
         BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
         GenerateFillReportsBuilder, GenerateOrderStatusReport, GenerateOrderStatusReports,
@@ -42,7 +42,7 @@ use nautilus_common::{
 };
 use nautilus_core::{
     AtomicSet, MUTEX_POISONED, Params, UUID4, UnixNanos,
-    datetime::{NANOSECONDS_IN_MILLISECOND, NANOSECONDS_IN_SECOND, checked_mins_to_nanos},
+    datetime::{NANOSECONDS_IN_MILLISECOND, NANOSECONDS_IN_SECOND, mins_to_nanos},
     time::{AtomicTime, get_atomic_clock_realtime},
 };
 use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
@@ -224,7 +224,7 @@ pub struct BinanceFuturesExecutionClient {
     recovery_task: Option<JoinHandle<()>>,
     recovery_lock: Arc<TokioMutex<()>>,
     recovery_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
-    pending_tasks: TaskHandles,
+    pending_tasks: Mutex<Vec<JoinHandle<()>>>,
     is_hedge_mode: AtomicBool,
 }
 
@@ -326,7 +326,7 @@ impl BinanceFuturesExecutionClient {
             recovery_task: None,
             recovery_lock: Arc::new(TokioMutex::new(())),
             recovery_tx: None,
-            pending_tasks: TaskHandles::default(),
+            pending_tasks: Mutex::new(Vec::new()),
             is_hedge_mode: AtomicBool::new(false),
         })
     }
@@ -2139,13 +2139,10 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
 
         let ts_now = self.clock.get_time_ns();
 
-        let start = if let Some(mins) = lookback_mins {
-            let lookback_ns = checked_mins_to_nanos(mins)
-                .context("lookback minutes exceed the nanosecond range")?;
-            Some(UnixNanos::from(ts_now.as_u64().saturating_sub(lookback_ns)))
-        } else {
-            None
-        };
+        let start = lookback_mins.map(|mins| {
+            let lookback_ns = mins_to_nanos(mins);
+            UnixNanos::from(ts_now.as_u64().saturating_sub(lookback_ns))
+        });
 
         let order_cmd = GenerateOrderStatusReportsBuilder::default()
             .ts_init(ts_now)
@@ -3075,9 +3072,7 @@ fn is_instrument_for_product(instrument: &InstrumentAny, product_type: BinancePr
         BinanceProductType::UsdM => {
             matches!(
                 instrument,
-                InstrumentAny::CryptoFuture(_)
-                    | InstrumentAny::CryptoPerpetual(_)
-                    | InstrumentAny::PerpetualContract(_)
+                InstrumentAny::CryptoFuture(_) | InstrumentAny::CryptoPerpetual(_)
             ) && !instrument.is_inverse()
         }
         BinanceProductType::CoinM => {
@@ -3094,8 +3089,7 @@ fn is_instrument_for_product(instrument: &InstrumentAny, product_type: BinancePr
 mod tests {
     use nautilus_model::{
         instruments::stubs::{
-            crypto_future_btcusdt, crypto_perpetual_ethusdt, currency_pair_btcusdt,
-            perpetual_contract_eurusd, xbtusd_bitmex,
+            crypto_future_btcusdt, crypto_perpetual_ethusdt, currency_pair_btcusdt, xbtusd_bitmex,
         },
         types::Price,
     };
@@ -3279,7 +3273,6 @@ mod tests {
     #[rstest]
     fn test_instrument_product_matching_distinguishes_futures_products_from_spot() {
         let usdm = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt());
-        let generic_perpetual = InstrumentAny::PerpetualContract(perpetual_contract_eurusd());
         let coinm = InstrumentAny::CryptoPerpetual(xbtusd_bitmex());
         let delivery =
             || crypto_future_btcusdt(2, 6, Price::from("0.01"), Quantity::from("0.000001"));
@@ -3291,14 +3284,6 @@ mod tests {
 
         assert!(is_instrument_for_product(&usdm, BinanceProductType::UsdM));
         assert!(!is_instrument_for_product(&usdm, BinanceProductType::CoinM));
-        assert!(is_instrument_for_product(
-            &generic_perpetual,
-            BinanceProductType::UsdM
-        ));
-        assert!(!is_instrument_for_product(
-            &generic_perpetual,
-            BinanceProductType::CoinM
-        ));
         assert!(is_instrument_for_product(&coinm, BinanceProductType::CoinM));
         assert!(!is_instrument_for_product(&coinm, BinanceProductType::UsdM));
         assert!(is_instrument_for_product(

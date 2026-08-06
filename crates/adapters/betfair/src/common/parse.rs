@@ -16,7 +16,7 @@
 //! Parsing utilities that convert Betfair payloads into Nautilus domain models.
 
 use anyhow::Context;
-use jiff::Timestamp;
+use chrono::DateTime;
 use nautilus_core::{UUID4, UnixNanos, datetime::NANOSECONDS_IN_MILLISECOND};
 use nautilus_model::{
     enums::AccountType,
@@ -72,17 +72,17 @@ pub fn make_instrument_id(market_id: &str, selection_id: u64, handicap: Decimal)
 ///
 /// Returns an error if the string is not a valid RFC 3339 datetime.
 ///
+/// # Panics
+///
+/// Panics if the parsed datetime cannot be represented as nanoseconds.
 pub fn parse_betfair_timestamp(s: &str) -> anyhow::Result<UnixNanos> {
-    let dt = s
-        .parse::<Timestamp>()
+    let dt = DateTime::parse_from_rfc3339(s)
         .or_else(|_| {
             // Betfair sometimes uses ".000Z" millis suffix
-            s.replace(".000Z", "Z").parse::<Timestamp>()
+            DateTime::parse_from_rfc3339(&s.replace(".000Z", "Z"))
         })
         .with_context(|| format!("invalid Betfair timestamp: {s}"))?;
-    let nanos = u64::try_from(dt.as_nanosecond())
-        .with_context(|| format!("Betfair timestamp is outside the UnixNanos range: {s}"))?;
-    Ok(UnixNanos::from(nanos))
+    Ok(UnixNanos::from(dt.timestamp_nanos_opt().unwrap() as u64))
 }
 
 /// Converts a millisecond epoch timestamp (as used in stream `pt` field) into [`UnixNanos`].
@@ -307,7 +307,6 @@ pub fn parse_market_definition(
     market_id: &str,
     def: &MarketDefinition,
     currency: Currency,
-    ts_event: UnixNanos,
     ts_init: UnixNanos,
     min_notional: Option<Money>,
 ) -> anyhow::Result<Vec<InstrumentAny>> {
@@ -413,7 +412,7 @@ pub fn parse_market_definition(
             Some(fee_rate),     // taker_fee
             None,               // tick_scheme
             None,               // info
-            ts_event,           // ts_event
+            ts_init,            // ts_event
             ts_init,            // ts_init
         )
         .with_context(|| {
@@ -674,25 +673,25 @@ mod tests {
         if let StreamMessage::MarketChange(mcm) = msg {
             let mc = mcm.mc.as_ref().expect("market changes");
             let change = &mc[0];
-            let ts_event = parse_millis_timestamp(mcm.pt);
-            let ts_init = UnixNanos::from(1_800_000_000_000_000_001);
-
             let def = change
                 .market_definition
                 .as_ref()
                 .expect("market definition");
 
-            let instruments =
-                parse_market_definition(&change.id, def, Currency::GBP(), ts_event, ts_init, None)
-                    .unwrap();
+            let instruments = parse_market_definition(
+                &change.id,
+                def,
+                Currency::GBP(),
+                parse_millis_timestamp(mcm.pt),
+                None,
+            )
+            .unwrap();
 
             assert_eq!(instruments.len(), 7);
 
             if let InstrumentAny::Betting(inst) = &instruments[0] {
                 assert_eq!(inst.market_id.as_str(), "1.180737206");
                 assert_eq!(inst.market_type.as_str(), "WIN");
-                assert_eq!(inst.ts_event, ts_event);
-                assert_eq!(inst.ts_init, ts_init);
             } else {
                 panic!("expected BettingInstrument");
             }

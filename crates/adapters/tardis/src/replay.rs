@@ -21,12 +21,12 @@ use std::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::Context;
 use arrow::record_batch::RecordBatch;
+use chrono::{DateTime, Duration, NaiveDate};
 use futures_util::{StreamExt, pin_mut};
-use jiff::{Timestamp, civil::Date, tz::Offset};
 use nautilus_core::{UnixNanos, datetime::unix_nanos_to_iso8601, string::formatting::Separable};
 use nautilus_model::{
     data::{
-        Bar, BarType, CatalogPathPrefix, Data, OptionGreeks, OrderBookDelta, OrderBookDeltas,
+        Bar, BarType, CatalogPathPrefix, Data, OptionGreeks, OrderBookDelta, OrderBookDeltas_API,
         OrderBookDepth10, QuoteTick, TradeTick,
     },
     identifiers::InstrumentId,
@@ -46,7 +46,7 @@ use crate::{
 
 struct DateCursor {
     /// Cursor date UTC.
-    date_utc: Date,
+    date_utc: NaiveDate,
     /// Cursor end timestamp UNIX nanoseconds.
     end_ns: UnixNanos,
 }
@@ -54,21 +54,16 @@ struct DateCursor {
 impl DateCursor {
     /// Creates a new [`DateCursor`] instance.
     fn new(current_ns: UnixNanos) -> Self {
-        let current_utc = current_ns.to_datetime_utc();
-        let date_utc = Offset::UTC.to_datetime(current_utc).date();
+        let current_utc = DateTime::from_timestamp_nanos(current_ns.as_i64());
+        let date_utc = current_utc.date_naive();
 
         // Calculate end of the current UTC day
-        let end_utc = utc_timestamp(date_utc, 23, 59, 59, 999_999_999);
-        let end_ns = UnixNanos::from(u64::try_from(end_utc.as_nanosecond()).unwrap_or(u64::MAX));
+        let end_utc =
+            date_utc.and_hms_opt(23, 59, 59).unwrap() + Duration::nanoseconds(999_999_999);
+        let end_ns = UnixNanos::from(end_utc.and_utc().timestamp_nanos_opt().unwrap() as u64);
 
         Self { date_utc, end_ns }
     }
-}
-
-fn utc_timestamp(date: Date, hour: i8, minute: i8, second: i8, nanosecond: i32) -> Timestamp {
-    Offset::UTC
-        .to_timestamp(date.at(hour, minute, second, nanosecond))
-        .expect("valid UTC civil datetime")
 }
 
 /// Runs the Tardis Machine replay from a JSON configuration file.
@@ -297,7 +292,7 @@ pub async fn run_tardis_machine_replay_from_config(config_filepath: &Path) -> an
 }
 
 fn handle_deltas_msg(
-    deltas: &OrderBookDeltas,
+    deltas: &OrderBookDeltas_API,
     map: &mut AHashMap<InstrumentId, Vec<OrderBookDelta>>,
     cursors: &mut AHashMap<InstrumentId, DateCursor>,
     path: &Path,
@@ -473,7 +468,7 @@ fn handle_option_greeks_msg(
 fn batch_and_write_deltas(
     deltas: &[OrderBookDelta],
     instrument_id: &InstrumentId,
-    date: Date,
+    date: NaiveDate,
     path: &Path,
     compression: Compression,
 ) {
@@ -495,7 +490,7 @@ fn batch_and_write_deltas(
 fn batch_and_write_depths(
     depths: &[OrderBookDepth10],
     instrument_id: &InstrumentId,
-    date: Date,
+    date: NaiveDate,
     path: &Path,
     compression: Compression,
 ) {
@@ -517,7 +512,7 @@ fn batch_and_write_depths(
 fn batch_and_write_quotes(
     quotes: &[QuoteTick],
     instrument_id: &InstrumentId,
-    date: Date,
+    date: NaiveDate,
     path: &Path,
     compression: Compression,
 ) {
@@ -539,7 +534,7 @@ fn batch_and_write_quotes(
 fn batch_and_write_trades(
     trades: &[TradeTick],
     instrument_id: &InstrumentId,
-    date: Date,
+    date: NaiveDate,
     path: &Path,
     compression: Compression,
 ) {
@@ -561,7 +556,7 @@ fn batch_and_write_trades(
 fn batch_and_write_bars(
     bars: &[Bar],
     bar_type: &BarType,
-    date: Date,
+    date: NaiveDate,
     path: &Path,
     compression: Compression,
 ) {
@@ -584,7 +579,7 @@ fn batch_and_write_bars(
 fn batch_and_write_greeks(
     greeks: &[OptionGreeks],
     instrument_id: &InstrumentId,
-    date: Date,
+    date: NaiveDate,
     path: &Path,
     compression: Compression,
 ) {
@@ -609,8 +604,8 @@ fn batch_and_write_greeks(
 ///
 /// Panics if the date is before 1970-01-01, as pre-epoch dates cannot be
 /// reliably represented as UnixNanos without overflow issues.
-fn assert_post_epoch(date: Date) {
-    let epoch = Date::constant(1970, 1, 1);
+fn assert_post_epoch(date: NaiveDate) {
+    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("UNIX epoch must exist");
     assert!(
         date >= epoch,
         "Tardis replay filenames require dates on or after 1970-01-01; received {date}"
@@ -636,17 +631,24 @@ fn timestamps_to_filename(timestamp_1: UnixNanos, timestamp_2: UnixNanos) -> Str
     format!("{datetime_1}_{datetime_2}.parquet")
 }
 
-fn parquet_filepath(typename: &str, instrument_id: &InstrumentId, date: Date) -> PathBuf {
+fn parquet_filepath(typename: &str, instrument_id: &InstrumentId, date: NaiveDate) -> PathBuf {
     assert_post_epoch(date);
 
     let instrument_id_str = instrument_id.to_string().replace('/', "");
 
-    let start_nanos = utc_timestamp(date, 0, 0, 0, 0).as_nanosecond();
-    let end_nanos = utc_timestamp(date, 23, 59, 59, 999_999_999).as_nanosecond();
+    let start_utc = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
+    let end_utc = date.and_hms_opt(23, 59, 59).unwrap() + Duration::nanoseconds(999_999_999);
+
+    let start_nanos = start_utc
+        .timestamp_nanos_opt()
+        .expect("valid nanosecond timestamp");
+    let end_nanos = (end_utc.and_utc())
+        .timestamp_nanos_opt()
+        .expect("valid nanosecond timestamp");
 
     let filename = timestamps_to_filename(
-        UnixNanos::from(u64::try_from(start_nanos).expect("date fits UnixNanos")),
-        UnixNanos::from(u64::try_from(end_nanos).expect("date fits UnixNanos")),
+        UnixNanos::from(start_nanos as u64),
+        UnixNanos::from(end_nanos as u64),
     );
 
     PathBuf::new()
@@ -655,18 +657,25 @@ fn parquet_filepath(typename: &str, instrument_id: &InstrumentId, date: Date) ->
         .join(filename)
 }
 
-fn parquet_filepath_bars(bar_type: &BarType, date: Date) -> PathBuf {
+fn parquet_filepath_bars(bar_type: &BarType, date: NaiveDate) -> PathBuf {
     assert_post_epoch(date);
 
     let bar_type_str = bar_type.to_string().replace('/', "");
 
     // Calculate start and end timestamps for the day (UTC)
-    let start_nanos = utc_timestamp(date, 0, 0, 0, 0).as_nanosecond();
-    let end_nanos = utc_timestamp(date, 23, 59, 59, 999_999_999).as_nanosecond();
+    let start_utc = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
+    let end_utc = date.and_hms_opt(23, 59, 59).unwrap() + Duration::nanoseconds(999_999_999);
+
+    let start_nanos = start_utc
+        .timestamp_nanos_opt()
+        .expect("valid nanosecond timestamp");
+    let end_nanos = (end_utc.and_utc())
+        .timestamp_nanos_opt()
+        .expect("valid nanosecond timestamp");
 
     let filename = timestamps_to_filename(
-        UnixNanos::from(u64::try_from(start_nanos).expect("date fits UnixNanos")),
-        UnixNanos::from(u64::try_from(end_nanos).expect("date fits UnixNanos")),
+        UnixNanos::from(start_nanos as u64),
+        UnixNanos::from(end_nanos as u64),
     );
 
     PathBuf::new()
@@ -679,7 +688,7 @@ fn write_batch(
     batch: &RecordBatch,
     typename: &str,
     instrument_id: &InstrumentId,
-    date: Date,
+    date: NaiveDate,
     path: &Path,
     compression: Compression,
 ) {
@@ -715,6 +724,7 @@ fn write_parquet_local(
 mod tests {
     use std::sync::Arc;
 
+    use chrono::{TimeZone, Utc};
     use nautilus_persistence::backend::catalog::ParquetDataCatalog;
     use rstest::rstest;
 
@@ -729,56 +739,34 @@ mod tests {
         },
     };
 
-    fn utc_nanos(
-        year: i16,
-        month: i8,
-        day: i8,
-        hour: i8,
-        minute: i8,
-        second: i8,
-        nanosecond: i32,
-    ) -> u64 {
-        u64::try_from(
-            utc_timestamp(
-                Date::new(year, month, day).unwrap(),
-                hour,
-                minute,
-                second,
-                nanosecond,
-            )
-            .as_nanosecond(),
-        )
-        .unwrap()
-    }
-
     #[rstest]
     #[case(
     // Start of day: 2024-01-01 00:00:00 UTC
-    utc_nanos(2024, 1, 1, 0, 0, 0, 0),
-    Date::new(2024, 1, 1).unwrap(),
-    utc_nanos(2024, 1, 1, 23, 59, 59, 999_999_999)
+    Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap().timestamp_nanos_opt().unwrap() as u64,
+    NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+    Utc.with_ymd_and_hms(2024, 1, 1, 23, 59, 59).unwrap().timestamp_nanos_opt().unwrap() as u64 + 999_999_999
 )]
     #[case(
     // Midday: 2024-01-01 12:00:00 UTC
-    utc_nanos(2024, 1, 1, 12, 0, 0, 0),
-    Date::new(2024, 1, 1).unwrap(),
-    utc_nanos(2024, 1, 1, 23, 59, 59, 999_999_999)
+    Utc.with_ymd_and_hms(2024, 1, 1, 12, 0, 0).unwrap().timestamp_nanos_opt().unwrap() as u64,
+    NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+    Utc.with_ymd_and_hms(2024, 1, 1, 23, 59, 59).unwrap().timestamp_nanos_opt().unwrap() as u64 + 999_999_999
 )]
     #[case(
     // End of day: 2024-01-01 23:59:59.999999999 UTC
-    utc_nanos(2024, 1, 1, 23, 59, 59, 999_999_999),
-    Date::new(2024, 1, 1).unwrap(),
-    utc_nanos(2024, 1, 1, 23, 59, 59, 999_999_999)
+    Utc.with_ymd_and_hms(2024, 1, 1, 23, 59, 59).unwrap().timestamp_nanos_opt().unwrap() as u64 + 999_999_999,
+    NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+    Utc.with_ymd_and_hms(2024, 1, 1, 23, 59, 59).unwrap().timestamp_nanos_opt().unwrap() as u64 + 999_999_999
 )]
     #[case(
     // Start of new day: 2024-01-02 00:00:00 UTC
-    utc_nanos(2024, 1, 2, 0, 0, 0, 0),
-    Date::new(2024, 1, 2).unwrap(),
-    utc_nanos(2024, 1, 2, 23, 59, 59, 999_999_999)
+    Utc.with_ymd_and_hms(2024, 1, 2, 0, 0, 0).unwrap().timestamp_nanos_opt().unwrap() as u64,
+    NaiveDate::from_ymd_opt(2024, 1, 2).unwrap(),
+    Utc.with_ymd_and_hms(2024, 1, 2, 23, 59, 59).unwrap().timestamp_nanos_opt().unwrap() as u64 + 999_999_999
 )]
     fn test_date_cursor(
         #[case] timestamp: u64,
-        #[case] expected_date: Date,
+        #[case] expected_date: NaiveDate,
         #[case] expected_end_ns: u64,
     ) {
         let unix_nanos = UnixNanos::from(timestamp);
@@ -953,7 +941,12 @@ mod tests {
         let compression = ParquetCompression::Zstd.as_parquet_compression();
         let bar_type = BarType::from("BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL");
 
-        let ts_1 = UnixNanos::from(utc_nanos(2024, 1, 1, 0, 0, 0, 0));
+        let ts_1 = UnixNanos::from(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap() as u64,
+        );
         let ts_2 = ts_1 + 1_000_000_000;
 
         let bar_1 = Bar::new(

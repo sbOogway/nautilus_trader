@@ -1,7 +1,19 @@
-# NautilusTrader Python package
+# NautilusTrader v2
 
-This directory contains the `nautilus_trader` Python package. Rust core bindings are exposed
-through PyO3.
+> [!NOTE]
+>
+> **Under active development.** Core trading functionality (live trading, backtesting,
+> adapters, strategies, execution algorithms) works through PyO3 bindings. Some features
+> from v1 are still being ported.
+
+This directory contains the `nautilus_trader` v2 Python package.
+v2 replaces the Cython layer with Rust core bindings exposed through PyO3.
+
+**Rules during the transition:**
+
+- The `python/` directory is self-contained. Everything Python-related for v2 lives here.
+- This directory will remain when v1 is removed (the top-level `nautilus_trader/` goes away).
+- Nothing outside this directory should reference anything inside it for now.
 
 ## Project structure
 
@@ -12,6 +24,7 @@ python/
 ├── generate_stubs.py           # Generates Python type stubs from Rust bindings
 ├── pyproject.toml              # Maturin build configuration
 ├── uv.lock                     # Dependency lock file
+├── examples/                   # Python examples using v2 bindings
 ├── tests/
 │   ├── conftest.py             # Shared pytest fixtures
 │   ├── unit/
@@ -32,12 +45,17 @@ python/
 
 ## Build targets
 
+> [!NOTE]
+> The v2 build uses `target-v2/` for Cargo artifacts to avoid conflicts with
+> the v1 build in `target/`. This separation is temporary until the v2
+> transition completes.
+
 From the repository root:
 
 ```bash
-make build-debug  # Compile and install into .venv (debug mode)
-make py-stubs     # Regenerate type stubs and docstrings
-make pytest       # Run Python tests
+make build-debug-v2   # Compile and install into python/.venv (debug mode)
+make py-stubs-v2      # Regenerate type stubs and docstrings
+make pytest-v2        # Run Python tests
 ```
 
 ## Development setup
@@ -50,14 +68,14 @@ make pytest       # Run Python tests
 
 ### Quick start
 
-From the repository root:
+From within this `python/` directory:
 
 ```bash
-make build-debug
+uv run maturin develop --extras dev,test
 ```
 
-This compiles the Rust extension and installs it into the project venv (`.venv`). Run it again
-after Rust changes.
+This compiles the Rust extension and installs it into the project venv (`python/.venv`).
+Run again after Rust changes.
 
 ## How it works
 
@@ -82,16 +100,17 @@ UUID4()
 
 ```bash
 git clone https://github.com/nautechsystems/nautilus_trader.git
-cd nautilus_trader
-make build
+cd nautilus_trader/python
+uv run maturin develop --extras dev,test
 ```
 
 ### Development wheels (pre-release)
 
-CI publishes development wheels on successful `develop` and `nightly` builds.
+CI publishes Python v2 wheels to the separate v2 index on successful `develop` and `nightly`
+builds.
 
 ```bash
-uv pip install --pre --index-url=https://packages.nautechsystems.io/simple/ nautilus-trader
+uv pip install --pre --index-url=https://packages.nautechsystems.io/v2/simple/ nautilus-trader
 ```
 
 | Platform           | Python    | Develop | Nightly |
@@ -101,17 +120,20 @@ uv pip install --pre --index-url=https://packages.nautechsystems.io/simple/ naut
 | `macOS (ARM64)`    | 3.12-3.14 | -       | ✓       |
 | `Windows (x86_64)` | 3.12-3.14 | -       | ✓       |
 
-The nightly merge builds and tests wheels on every listed platform.
+The nightly merge builds and tests v2 wheels on every listed platform. Outside wheel
+publication, cross-platform nightly validation is v2-only; v1 continues to run its main test suite
+on `develop`.
 
 The `--pre` flag is required because wheels are tagged as pre-release builds. Run this command
 outside the NautilusTrader source checkout so the repository's `exclude-newer` uv policy does not
-filter out newly published wheels. The installed package imports as `nautilus_trader`.
+filter out newly published v2 wheels. The installed package imports as `nautilus_trader`.
 
-Build from source inside a checkout, when a wheel is not available for your platform, or when you
+Build from source inside a checkout, when a v2 wheel is not available for your platform, or when you
 need local Rust changes:
 
 ```bash
-make build-debug
+cd ..
+make build-debug-v2
 ```
 
 ## Testing
@@ -119,8 +141,8 @@ make build-debug
 Tests live in `tests/` and require a built extension module.
 
 ```bash
-make build-debug  # Build first
-make pytest       # Run tests
+make build-debug-v2   # Build first
+make pytest-v2        # Run tests
 ```
 
 Use pytest-style free functions and fixtures. Do not use test classes.
@@ -133,7 +155,7 @@ Type stubs (`.pyi` files) are auto-generated using
 Rust bindings:
 
 ```bash
-make py-stubs
+make py-stubs-v2
 ```
 
 This runs `generate_docstrings.py` first to copy doc comments from Rust source to PyO3

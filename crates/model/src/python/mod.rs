@@ -75,7 +75,7 @@ pub fn currency_lookup_error_to_pyvalue_err(e: CurrencyLookupError) -> PyErr {
     to_pyvalue_err(e)
 }
 
-/// Exposed through `nautilus_trader.model`.
+/// Loaded as `nautilus_pyo3.model`.
 ///
 /// # Errors
 ///
@@ -96,6 +96,7 @@ pub fn model(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::types::balance::MarginBalance>()?;
     m.add_class::<crate::python::common::EnumIterator>()?;
     // Data
+    m.add_function(wrap_pyfunction!(data::drop_cvec_pycapsule, m)?)?;
     m.add_class::<crate::data::DataType>()?;
     m.add_class::<crate::data::CustomData>()?;
     m.add_function(pyo3::wrap_pyfunction!(

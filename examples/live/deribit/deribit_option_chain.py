@@ -27,16 +27,15 @@ On start, this actor:
 
 from nautilus_trader.adapters.deribit import DERIBIT
 from nautilus_trader.adapters.deribit import DeribitDataClientConfig
-from nautilus_trader.adapters.deribit import DeribitEnvironment
 from nautilus_trader.adapters.deribit import DeribitLiveDataClientFactory
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.config import ActorConfig
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.config import TradingNodeConfig
+from nautilus_trader.core import nautilus_pyo3
+from nautilus_trader.core.nautilus_pyo3 import DeribitEnvironment
 from nautilus_trader.live.node import TradingNode
-from nautilus_trader.model import OptionSeriesId
-from nautilus_trader.model import StrikeRange
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import TraderId
 
@@ -59,7 +58,7 @@ class OptionChainTester(Actor):
         self._strikes_above = config.strikes_above
         self._strikes_below = config.strikes_below
         self._snapshot_interval_ms = config.snapshot_interval_ms
-        self._series_id: OptionSeriesId | None = None
+        self._series_id: nautilus_pyo3.OptionSeriesId | None = None
 
     def on_start(self) -> None:
         instruments = self.cache.instruments()
@@ -102,7 +101,7 @@ class OptionChainTester(Actor):
         )
 
         # Build OptionSeriesId for the nearest expiry
-        series_id = OptionSeriesId(
+        series_id = nautilus_pyo3.OptionSeriesId(
             DERIBIT,
             self._underlying,
             settlement,
@@ -113,7 +112,7 @@ class OptionChainTester(Actor):
         self.log.info(f"Subscribing to option chain: {series_id}")
 
         # Build StrikeRange
-        strike_range = StrikeRange.atm_relative(
+        strike_range = nautilus_pyo3.StrikeRange.atm_relative(
             strikes_above=self._strikes_above,
             strikes_below=self._strikes_below,
         )

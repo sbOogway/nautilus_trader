@@ -15,14 +15,14 @@
 
 //! Live execution client implementation for the Deribit adapter.
 
-use std::future::Future;
+use std::{future::Future, sync::Mutex};
 
 use anyhow::Context;
 use async_trait::async_trait;
 use futures_util::{StreamExt, pin_mut};
 use nautilus_common::{
     clients::ExecutionClient,
-    live::{get_runtime, runner::get_exec_event_sender, task::TaskHandles},
+    live::{get_runtime, runner::get_exec_event_sender},
     messages::execution::{
         BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
         GenerateFillReportsBuilder, GenerateOrderStatusReport, GenerateOrderStatusReports,
@@ -32,7 +32,7 @@ use nautilus_common::{
     },
 };
 use nautilus_core::{
-    UnixNanos,
+    MUTEX_POISONED, UnixNanos,
     datetime::NANOSECONDS_IN_SECOND,
     time::{AtomicTime, get_atomic_clock_realtime},
 };
@@ -73,7 +73,7 @@ pub struct DeribitExecutionClient {
     http_client: DeribitHttpClient,
     ws_client: DeribitWebSocketClient,
     ws_stream_handle: Option<JoinHandle<()>>,
-    pending_tasks: TaskHandles,
+    pending_tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl DeribitExecutionClient {
@@ -138,7 +138,7 @@ impl DeribitExecutionClient {
             http_client,
             ws_client,
             ws_stream_handle: None,
-            pending_tasks: TaskHandles::default(),
+            pending_tasks: Mutex::new(Vec::new()),
         })
     }
 
@@ -154,12 +154,17 @@ impl DeribitExecutionClient {
             }
         });
 
-        self.pending_tasks.push(handle);
+        let mut tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
+        tasks.retain(|handle| !handle.is_finished());
+        tasks.push(handle);
     }
 
     /// Aborts all pending async tasks.
     fn abort_pending_tasks(&self) {
-        self.pending_tasks.abort_all();
+        let mut tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
+        for handle in tasks.drain(..) {
+            handle.abort();
+        }
     }
 
     // Rejects unsupported order types and time-in-force values

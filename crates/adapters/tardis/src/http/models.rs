@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use jiff::Timestamp;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ustr::Ustr;
@@ -44,15 +44,15 @@ pub struct TardisInstrumentInfo {
     pub active: bool,
     /// The listing date in ISO format.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub listing: Option<Timestamp>,
+    pub listing: Option<DateTime<Utc>>,
     /// The available from date in ISO format.
-    pub available_since: Timestamp,
+    pub available_since: DateTime<Utc>,
     /// The available to date in ISO format.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub available_to: Option<Timestamp>,
+    pub available_to: Option<DateTime<Utc>>,
     /// The contract expiry date in ISO format (applicable to futures and options).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expiry: Option<Timestamp>,
+    pub expiry: Option<DateTime<Utc>>,
     /// The instrument price increment.
     #[serde(deserialize_with = "deserialize_f64_or_string")]
     pub price_increment: f64,
@@ -101,7 +101,7 @@ pub struct TardisInstrumentInfo {
 /// The changes info returned by the exchanges API.
 pub struct TardisInstrumentChanges {
     /// Date in ISO format.
-    pub until: Timestamp,
+    pub until: DateTime<Utc>,
     /// The minimum price increment (tick size).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default, deserialize_with = "deserialize_opt_f64_or_string")]

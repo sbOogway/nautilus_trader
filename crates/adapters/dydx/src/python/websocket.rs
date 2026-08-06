@@ -32,7 +32,7 @@ use nautilus_core::{
 use nautilus_model::{
     data::{
         Bar, BarType, Data, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate,
-        OrderBookDeltas,
+        OrderBookDeltas, OrderBookDeltas_API,
     },
     enums::{AccountType, MarketStatusAction, OrderSide, OrderStatus, OrderType},
     events::{AccountState, OrderAccepted, OrderCanceled},
@@ -40,7 +40,7 @@ use nautilus_model::{
         AccountId, ClientOrderId, InstrumentId, StrategyId, Symbol, TraderId, VenueOrderId,
     },
     instruments::{Instrument, InstrumentAny},
-    python::{data::data_to_pyobject, instruments::pyobject_to_instrument_any},
+    python::{data::data_to_pycapsule, instruments::pyobject_to_instrument_any},
     types::{AccountBalance, Currency, Money},
 };
 use nautilus_network::mode::ConnectionMode;
@@ -240,7 +240,8 @@ impl DydxWebSocketClient {
                                     Ok(items) => {
                                         Python::attach(|py| {
                                             for data in items {
-                                                send_data_to_python(py, data, &call_soon, &callback);
+                                                let py_obj = data_to_pycapsule(py, data);
+                                                call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                             }
                                         });
                                     }
@@ -265,8 +266,9 @@ impl DydxWebSocketClient {
                                 ) {
                                     Ok(deltas) => {
                                         Python::attach(|py| {
-                                            let data = Data::Deltas(Box::new(deltas));
-                                            send_data_to_python(py, data, &call_soon, &callback);
+                                            let data = Data::Deltas(OrderBookDeltas_API::new(deltas));
+                                            let py_obj = data_to_pycapsule(py, data);
+                                            call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                         });
                                     }
                                     Err(e) => log::error!("Failed to parse orderbook snapshot for {id}: {e}"),
@@ -290,8 +292,9 @@ impl DydxWebSocketClient {
                                 ) {
                                     Ok(deltas) => {
                                         Python::attach(|py| {
-                                            let data = Data::Deltas(Box::new(deltas));
-                                            send_data_to_python(py, data, &call_soon, &callback);
+                                            let data = Data::Deltas(OrderBookDeltas_API::new(deltas));
+                                            let py_obj = data_to_pycapsule(py, data);
+                                            call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                         });
                                     }
                                     Err(e) => log::error!("Failed to parse orderbook deltas for {id}: {e}"),
@@ -348,8 +351,9 @@ impl DydxWebSocketClient {
                                 if parse_ok && !all_deltas.is_empty() {
                                     let combined = OrderBookDeltas::new(instrument_id, all_deltas);
                                     Python::attach(|py| {
-                                        let data = Data::Deltas(Box::new(combined));
-                                        send_data_to_python(py, data, &call_soon, &callback);
+                                        let data = Data::Deltas(OrderBookDeltas_API::new(combined));
+                                        let py_obj = data_to_pycapsule(py, data);
+                                        call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                     });
                                 }
                             }
@@ -381,12 +385,8 @@ impl DydxWebSocketClient {
                                                 let emit_bar = *prev_bar;
                                                 pending_bars.insert(id.clone(), bar);
                                                 Python::attach(|py| {
-                                                    send_data_to_python(
-                                                        py,
-                                                        Data::Bar(emit_bar),
-                                                        &call_soon,
-                                                        &callback,
-                                                    );
+                                                    let py_obj = data_to_pycapsule(py, Data::Bar(emit_bar));
+                                                    call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                                 });
                                             }
                                         } else {
@@ -780,11 +780,7 @@ impl DydxWebSocketClient {
                                     let dict = PyDict::new(py);
                                     let _ = dict.set_item("type", "block_height");
                                     let _ = dict.set_item("height", height);
-                                    let _ = dict.set_item(
-                                        "time",
-                                        time.display_with_offset(jiff::tz::Offset::UTC).to_string(),
-                                    );
-
+                                    let _ = dict.set_item("time", time.to_rfc3339());
                                     if let Ok(py_obj) = dict.into_py_any(py) {
                                         call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                     }
@@ -1307,11 +1303,4 @@ fn send_to_python<T: for<'py> IntoPyObjectExt<'py>>(
         }
         Err(e) => log::error!("Failed to convert to Python: {e}"),
     });
-}
-
-fn send_data_to_python(py: Python<'_>, data: Data, call_soon: &Py<PyAny>, callback: &Py<PyAny>) {
-    match data_to_pyobject(py, data) {
-        Ok(py_obj) => call_python_threadsafe(py, call_soon, callback, py_obj),
-        Err(e) => log::error!("Failed to convert data to Python object: {e}"),
-    }
 }

@@ -25,12 +25,12 @@ integration.
 ## Targets
 
 | Target                     | What it stresses                                                        |
-| -------------------------- | ----------------------------------------------------------------------- |
+|----------------------------|-------------------------------------------------------------------------|
 | `fuzz_ws_decode`           | `DeriveWsFrame::parse` plus public/private subscription payload decode. |
 | `fuzz_decimal_decode`      | Derive decimal normalization across strings, numbers, and nulls.        |
 | `fuzz_trade_module_encode` | Trade module 1e18 scaling and seven-word ABI encoding.                  |
 | `fuzz_action_hash`         | EIP-712 action hash and typed-data hash assembly.                       |
-| `fuzz_nonce_sequence`      | Shared wallet/subaccount nonce uniqueness, ordering, and exhaustion.    |
+| `fuzz_nonce_sequence`      | Per-wallet/subaccount monotonic nonce allocation and refresh ordering.  |
 
 ## Running
 

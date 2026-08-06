@@ -29,10 +29,6 @@ use crate::{
 
 /// Converts a Python dict to `Params` (IndexMap<String, Value>).
 ///
-/// An empty dict canonicalizes to `None`, distinguishing "no params provided"
-/// from a populated map. This is not the inverse of [`params_to_pydict`], which
-/// accepts `&Params` (not `Option<&Params>`); callers handle the outer option.
-///
 /// # Errors
 ///
 /// Returns a `PyErr` if:

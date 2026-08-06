@@ -27,37 +27,30 @@
 use std::sync::LazyLock;
 
 use ahash::AHashMap;
+use chrono::{DateTime, LocalResult, NaiveTime, TimeZone};
+use chrono_tz::{America::New_York, Tz};
 use databento::dbn;
-use jiff::{
-    civil::Time,
-    tz::{AmbiguousOffset, Offset, TimeZone},
-};
-use nautilus_core::{
-    UnixNanos,
-    datetime::{NANOSECONDS_IN_DAY, get_timezone},
-};
+use nautilus_core::{UnixNanos, datetime::NANOSECONDS_IN_DAY};
 use ustr::Ustr;
 
 // Built-in defaults applied when a caller does not supply a `DatabentoDecodeConfig`
 static DEFAULT_CONFIG: LazyLock<DatabentoDecodeConfig> =
     LazyLock::new(DatabentoDecodeConfig::default);
-static NEW_YORK: LazyLock<TimeZone> =
-    LazyLock::new(|| get_timezone("America/New_York").expect("bundled America/New_York timezone"));
 
 // New York wall-clock time applied to OPRA options by default (16:00, the regular close)
-const fn opra_default_time() -> Time {
-    Time::constant(16, 0, 0, 0)
+fn opra_default_time() -> NaiveTime {
+    NaiveTime::from_hms_opt(16, 0, 0).expect("16:00:00 is a valid time")
 }
 
 /// Rule for reinterpreting a dataset's date-level (midnight-UTC) option expiration timestamps.
 #[derive(Clone, Debug)]
 pub struct OptionExpirationRule {
     /// Exchange-local timezone the wall-clock times are expressed in.
-    pub timezone: TimeZone,
+    pub timezone: Tz,
     /// Wall-clock expiration time applied when no per-underlying override matches.
-    pub default_time: Time,
+    pub default_time: NaiveTime,
     /// Per-underlying wall-clock overrides, keyed by underlying symbol.
-    pub overrides: AHashMap<Ustr, Time>,
+    pub overrides: AHashMap<Ustr, NaiveTime>,
 }
 
 impl OptionExpirationRule {
@@ -65,13 +58,13 @@ impl OptionExpirationRule {
     #[must_use]
     pub fn opra() -> Self {
         Self {
-            timezone: NEW_YORK.clone(),
+            timezone: New_York,
             default_time: opra_default_time(),
             overrides: AHashMap::new(),
         }
     }
 
-    fn time_for(&self, underlying: Ustr) -> Time {
+    fn time_for(&self, underlying: Ustr) -> NaiveTime {
         self.overrides
             .get(&underlying)
             .copied()
@@ -125,25 +118,30 @@ pub fn corrected_option_expiration(
     if raw == 0 || !raw.is_multiple_of(NANOSECONDS_IN_DAY) {
         return expiration;
     }
-    let date = Offset::UTC.to_datetime(expiration.to_datetime_utc()).date();
-    let ambiguous = rule
-        .timezone
-        .to_ambiguous_timestamp(date.to_datetime(rule.time_for(underlying)));
-    let corrected = match ambiguous.offset() {
-        AmbiguousOffset::Unambiguous { .. } => ambiguous.unambiguous(),
-        AmbiguousOffset::Fold { .. } => ambiguous.earlier(),
-        AmbiguousOffset::Gap { .. } => return expiration,
+    let Ok(raw) = i64::try_from(raw) else {
+        return expiration;
     };
-    corrected
-        .ok()
-        .and_then(|timestamp| u64::try_from(timestamp.as_nanosecond()).ok())
-        .map_or(expiration, UnixNanos::from)
+
+    let date = DateTime::from_timestamp_nanos(raw).date_naive();
+    let corrected = match rule
+        .timezone
+        .from_local_datetime(&date.and_time(rule.time_for(underlying)))
+    {
+        LocalResult::Single(dt) => dt,
+        LocalResult::Ambiguous(dt, _) => dt,
+        LocalResult::None => return expiration,
+    };
+
+    match corrected.timestamp_nanos_opt() {
+        Some(ns) if ns >= 0 => UnixNanos::from(ns as u64),
+        _ => expiration,
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use chrono::NaiveTime;
     use databento::dbn;
-    use jiff::civil::Time;
     use nautilus_core::UnixNanos;
     use rstest::rstest;
     use ustr::Ustr;
@@ -157,7 +155,7 @@ mod tests {
     const EDT_0930_ET: u64 = 1_782_739_800_000_000_000; // 2026-06-29 09:30 ET (13:30 UTC)
     const INTRADAY_UTC: u64 = 1_789_738_200_000_000_000; // 2026-09-18 13:30 UTC (non-midnight)
 
-    fn config_with_opra_override(underlying: &str, time: Time) -> DatabentoDecodeConfig {
+    fn config_with_opra_override(underlying: &str, time: NaiveTime) -> DatabentoDecodeConfig {
         let mut config = DatabentoDecodeConfig::default();
         config
             .option_expiration
@@ -192,7 +190,7 @@ mod tests {
 
     #[rstest]
     fn test_opra_override_applied_for_matching_underlying() {
-        let config = config_with_opra_override("XSP", Time::constant(9, 30, 0, 0));
+        let config = config_with_opra_override("XSP", NaiveTime::from_hms_opt(9, 30, 0).unwrap());
         let result = corrected_option_expiration(
             UnixNanos::from(EDT_MIDNIGHT_UTC),
             Ustr::from("XSP"),
@@ -204,7 +202,7 @@ mod tests {
 
     #[rstest]
     fn test_opra_default_used_when_underlying_not_overridden() {
-        let config = config_with_opra_override("XSP", Time::constant(9, 30, 0, 0));
+        let config = config_with_opra_override("XSP", NaiveTime::from_hms_opt(9, 30, 0).unwrap());
         let result = corrected_option_expiration(
             UnixNanos::from(EDT_MIDNIGHT_UTC),
             Ustr::from("SPX"),

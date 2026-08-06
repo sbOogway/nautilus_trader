@@ -85,7 +85,7 @@ fn extract_derive_exec_config(
     }
 }
 
-/// Exposed through `nautilus_trader.adapters.derive`.
+/// Loaded as `nautilus_pyo3.derive`.
 ///
 /// # Errors
 ///

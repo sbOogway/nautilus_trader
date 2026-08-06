@@ -50,8 +50,6 @@ mod serial_tests {
         RedisCacheConfig {
             host: Some("localhost".to_string()),
             port: Some(6379),
-            connection_timeout: 1,
-            number_of_retries: 0,
             ..Default::default()
         }
     }
@@ -61,7 +59,7 @@ mod serial_tests {
 
         create_redis_connection("test", &config)
             .await
-            .expect("A running Redis service is required for this test")
+            .expect("Failed to create Redis connection")
     }
 
     async fn setup_test_database() -> (RedisCacheDatabase, String) {
@@ -73,7 +71,7 @@ mod serial_tests {
         let mut database =
             RedisCacheDatabase::new(trader_id, instance_id, config, redis_cache_config())
                 .await
-                .expect("A running Redis service is required for this test");
+                .expect("Failed to create database");
 
         // Clean the database at the start
         database.flushdb().await;

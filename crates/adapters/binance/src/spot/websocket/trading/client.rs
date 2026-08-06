@@ -39,8 +39,7 @@ use nautilus_network::{
     mode::ConnectionMode,
     ratelimiter::quota::Quota,
     websocket::{
-        AuthTracker, PingHandler, TransportBackend, WebSocketClient, WebSocketConfig,
-        channel_message_handler,
+        PingHandler, TransportBackend, WebSocketClient, WebSocketConfig, channel_message_handler,
     },
 };
 use tokio_util::sync::CancellationToken;
@@ -92,7 +91,6 @@ pub struct BinanceSpotWsTradingClient {
     heartbeat: Option<u64>,
     signal: Arc<AtomicBool>,
     connection_mode: Arc<ArcSwap<AtomicU8>>,
-    user_data_tracker: AuthTracker,
     cmd_tx:
         Arc<tokio::sync::RwLock<tokio::sync::mpsc::UnboundedSender<BinanceSpotWsTradingCommand>>>,
     out_rx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<BinanceSpotWsTradingMessage>>>>,
@@ -137,7 +135,6 @@ impl BinanceSpotWsTradingClient {
             connection_mode: Arc::new(ArcSwap::new(Arc::new(AtomicU8::new(
                 ConnectionMode::Closed as u8,
             )))),
-            user_data_tracker: AuthTracker::new(),
             cmd_tx: Arc::new(tokio::sync::RwLock::new(cmd_tx)),
             out_rx: Arc::new(Mutex::new(None)),
             task_handle: None,
@@ -210,22 +207,6 @@ impl BinanceSpotWsTradingClient {
         mode_u8 == ConnectionMode::Active as u8
     }
 
-    /// Returns whether the private user data stream is active on the current connection.
-    #[must_use]
-    pub fn is_user_data_active(&self) -> bool {
-        self.is_active() && self.user_data_tracker.is_authenticated()
-    }
-
-    /// Marks the private user data stream active on the current connection.
-    pub fn mark_user_data_active(&self) {
-        self.user_data_tracker.succeed();
-    }
-
-    /// Marks the private user data stream inactive.
-    pub fn mark_user_data_inactive(&self) {
-        self.user_data_tracker.invalidate();
-    }
-
     /// Returns whether the client is closed.
     #[must_use]
     pub fn is_closed(&self) -> bool {
@@ -248,7 +229,6 @@ impl BinanceSpotWsTradingClient {
     #[expect(clippy::missing_panics_doc)]
     pub async fn connect(&mut self) -> BinanceWsApiResult<()> {
         self.signal.store(false, Ordering::Relaxed);
-        self.user_data_tracker.invalidate();
         self.cancellation_token = CancellationToken::new();
 
         let (raw_handler, raw_rx) = channel_message_handler();
@@ -285,13 +265,13 @@ impl BinanceSpotWsTradingClient {
             config,
             Some(raw_handler),
             Some(ping_handler),
+            None,
             keyed_quotas,
             Some(binance_ws_order_quota()), // Default quota for all operations
         )
         .await
         .map_err(|e| BinanceWsApiError::ConnectionError(e.to_string()))?;
 
-        client.set_auth_tracker(self.user_data_tracker.clone(), true);
         self.connection_mode.store(client.connection_mode_atomic());
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();

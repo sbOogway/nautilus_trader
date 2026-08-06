@@ -408,6 +408,7 @@ impl BybitWebSocketClient {
                     config.clone(),
                     Some(raw_handler.clone()),
                     Some(ping_handler.clone()),
+                    None,
                     vec![],
                     None,
                 ),
@@ -572,7 +573,7 @@ impl BybitWebSocketClient {
                                 // Begin auth attempt so succeed() will update state
                                 let _rx = auth_tracker.begin();
 
-                                let expires = jiff::Timestamp::now().as_millisecond()
+                                let expires = chrono::Utc::now().timestamp_millis()
                                     + WEBSOCKET_AUTH_WINDOW_MS;
                                 let signature = cred.sign_websocket_auth(expires);
 
@@ -1914,7 +1915,7 @@ impl BybitWebSocketClient {
             BybitWsError::Authentication("Credentials required for authentication".to_string())
         })?;
 
-        let expires = jiff::Timestamp::now().as_millisecond() + WEBSOCKET_AUTH_WINDOW_MS;
+        let expires = chrono::Utc::now().timestamp_millis() + WEBSOCKET_AUTH_WINDOW_MS;
         let signature = credential.sign_websocket_auth(expires);
 
         let auth_message = BybitAuthRequest {

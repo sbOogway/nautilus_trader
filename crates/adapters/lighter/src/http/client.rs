@@ -17,7 +17,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use jiff::Timestamp;
+use chrono::{DateTime, Utc};
 use nautilus_core::{
     AtomicTime, UnixNanos, consts::NAUTILUS_USER_AGENT, time::get_atomic_clock_realtime,
 };
@@ -964,20 +964,19 @@ impl LighterHttpClient {
     /// # Errors
     ///
     /// Returns an error if the instrument has not been registered, the bar
-    /// type is unsupported, the request fails, the page cap leaves part of the
-    /// requested range uncovered, or a candle cannot be parsed.
+    /// type is unsupported, the request fails, or a candle cannot be parsed.
     pub async fn request_bars(
         &self,
         instrument: &InstrumentAny,
         bar_type: BarType,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> LighterHttpResult<Vec<Bar>> {
         let market_id = self.market_index(instrument)?;
         let resolution = LighterCandleResolution::try_from(&bar_type)?;
         let interval_ms = resolution.interval_millis();
-        let now = Timestamp::now();
+        let now = Utc::now();
 
         if let (Some(start), Some(end)) = (start, end)
             && start >= end
@@ -998,8 +997,8 @@ impl LighterHttpClient {
         let requested_limit = limit.filter(|n| *n > 0).map(|n| n as usize);
         let target_limit = requested_limit.unwrap_or(DEFAULT_BARS_LIMIT);
         let start_was_unspecified = start.is_none();
-        let end_ms = end.as_millisecond().max(0);
-        let now_ms = now.as_millisecond();
+        let end_ms = end.timestamp_millis().max(0);
+        let now_ms = now.timestamp_millis();
 
         if end_ms == 0 {
             return Ok(Vec::new());
@@ -1012,7 +1011,7 @@ impl LighterHttpClient {
                 let lookback_ms = interval_ms.saturating_mul(lookback_bars);
                 end_ms.saturating_sub(lookback_ms)
             },
-            |dt| dt.as_millisecond().max(0),
+            |dt| dt.timestamp_millis().max(0),
         );
 
         if start_ms >= end_ms {
@@ -1080,13 +1079,8 @@ impl LighterHttpClient {
             pages += 1;
         }
 
-        let limit_satisfied =
-            !start_was_unspecified && requested_limit.is_some_and(|limit| bars.len() >= limit);
-        if pages >= MAX_BAR_REQUEST_PAGES && cursor_ms < end_ms && !limit_satisfied {
-            return Err(LighterHttpError::HistoryIncomplete {
-                data_type: "bar",
-                pages,
-            });
+        if pages >= MAX_BAR_REQUEST_PAGES {
+            log::warn!("Stopped Lighter bar request after {MAX_BAR_REQUEST_PAGES} pages");
         }
 
         if start_was_unspecified && bars.len() > target_limit {
@@ -1105,13 +1099,13 @@ impl LighterHttpClient {
     /// # Errors
     ///
     /// Returns an error if the instrument is not a perpetual, the instrument
-    /// has not been registered, the request range is invalid, the page cap
-    /// leaves part of the requested range uncovered, or a row cannot be parsed.
+    /// has not been registered, the request range is invalid, or a row cannot
+    /// be parsed.
     pub async fn request_funding_rates(
         &self,
         instrument: &InstrumentAny,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<usize>,
     ) -> LighterHttpResult<Vec<FundingRateUpdate>> {
         if !matches!(instrument, InstrumentAny::CryptoPerpetual(_)) {
@@ -1124,7 +1118,7 @@ impl LighterHttpClient {
         let market_id = self.market_index(instrument)?;
         let resolution = LighterFundingResolution::OneHour;
         let interval_ms = resolution.interval_millis();
-        let now = Timestamp::now();
+        let now = Utc::now();
 
         if let (Some(start), Some(end)) = (start, end)
             && start >= end
@@ -1145,7 +1139,7 @@ impl LighterHttpClient {
         let requested_limit = limit.filter(|n| *n > 0);
         let target_limit = requested_limit.unwrap_or(DEFAULT_FUNDING_RATES_LIMIT);
         let start_was_unspecified = start.is_none();
-        let end_ms = end.as_millisecond().max(0);
+        let end_ms = end.timestamp_millis().max(0);
 
         if end_ms == 0 {
             return Ok(Vec::new());
@@ -1158,7 +1152,7 @@ impl LighterHttpClient {
                 let lookback_ms = interval_ms.saturating_mul(lookback_rows);
                 end_ms.saturating_sub(lookback_ms)
             },
-            |dt| dt.as_millisecond().max(0),
+            |dt| dt.timestamp_millis().max(0),
         );
 
         if start_ms >= end_ms {
@@ -1232,13 +1226,8 @@ impl LighterHttpClient {
             pages += 1;
         }
 
-        let limit_satisfied = !start_was_unspecified
-            && requested_limit.is_some_and(|limit| funding_rates.len() >= limit);
-        if pages >= MAX_FUNDING_REQUEST_PAGES && cursor_ms < end_ms && !limit_satisfied {
-            return Err(LighterHttpError::HistoryIncomplete {
-                data_type: "funding rate",
-                pages,
-            });
+        if pages >= MAX_FUNDING_REQUEST_PAGES {
+            log::warn!("Stopped Lighter funding request after {MAX_FUNDING_REQUEST_PAGES} pages");
         }
 
         if start_was_unspecified && funding_rates.len() > target_limit {

@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Shared protocol values and WebSocket connection lifecycle timings.
+//! Constants for WebSocket protocol handling.
 
 /// Standard text ping message.
 pub const TEXT_PING: &str = "ping";

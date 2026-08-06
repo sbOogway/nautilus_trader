@@ -23,7 +23,6 @@ __all__ = [
     "DERIBIT",
     "DERIBIT_CLIENT_ID",
     "DERIBIT_VENUE",
-    "DeribitBookSummary",
     "DeribitCurrency",
     "DeribitDataClientConfig",
     "DeribitDataClientFactory",

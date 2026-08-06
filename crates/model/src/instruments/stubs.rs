@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use jiff::{Timestamp, civil::Date, tz::Offset};
+use chrono::{TimeZone, Utc};
 use nautilus_core::UnixNanos;
 use rstest::fixture;
 use rust_decimal::Decimal;
@@ -35,13 +35,6 @@ use crate::{
     },
     types::{Currency, Money, Price, Quantity},
 };
-
-fn timestamp(year: i16, month: i8, day: i8, hour: i8, minute: i8, second: i8) -> Timestamp {
-    let datetime = Date::new(year, month, day)
-        .expect("valid date")
-        .at(hour, minute, second, 0);
-    Offset::UTC.to_timestamp(datetime).expect("valid timestamp")
-}
 
 impl Default for SyntheticInstrument {
     /// Creates a new default [`SyntheticInstrument`] instance for testing.
@@ -67,8 +60,8 @@ pub fn crypto_future_btcusdt(
     #[default(Price::from("0.01"))] price_increment: Price,
     #[default(Quantity::from("0.000001"))] size_increment: Quantity,
 ) -> CryptoFuture {
-    let activation = timestamp(2014, 4, 8, 0, 0, 0);
-    let expiration = timestamp(2014, 7, 8, 0, 0, 0);
+    let activation = Utc.with_ymd_and_hms(2014, 4, 8, 0, 0, 0).unwrap();
+    let expiration = Utc.with_ymd_and_hms(2014, 7, 8, 0, 0, 0).unwrap();
     CryptoFuture::new(
         InstrumentId::from("ETHUSDT-123.BINANCE"),
         Symbol::from("BTCUSDT"),
@@ -76,8 +69,8 @@ pub fn crypto_future_btcusdt(
         Currency::from("USDT"),
         Currency::from("USDT"),
         false,
-        UnixNanos::from(activation),
-        UnixNanos::from(expiration),
+        UnixNanos::from(activation.timestamp_nanos_opt().unwrap() as u64),
+        UnixNanos::from(expiration.timestamp_nanos_opt().unwrap() as u64),
         price_precision,
         size_precision,
         price_increment,
@@ -108,8 +101,8 @@ pub fn ethbtc_quanto(
     #[default(Price::from("0.00001"))] price_increment: Price,
     #[default(Quantity::from("0.001"))] size_increment: Quantity,
 ) -> CryptoFuture {
-    let activation = timestamp(2014, 4, 8, 0, 0, 0);
-    let expiration = timestamp(2014, 7, 8, 0, 0, 0);
+    let activation = Utc.with_ymd_and_hms(2014, 4, 8, 0, 0, 0).unwrap();
+    let expiration = Utc.with_ymd_and_hms(2014, 7, 8, 0, 0, 0).unwrap();
     CryptoFuture::new(
         InstrumentId::from("ETHBTC-123.BINANCE"),
         Symbol::from("ETHBTC"),
@@ -117,8 +110,8 @@ pub fn ethbtc_quanto(
         Currency::from("BTC"),
         Currency::from("USDT"),
         false,
-        UnixNanos::from(activation),
-        UnixNanos::from(expiration),
+        UnixNanos::from(activation.timestamp_nanos_opt().unwrap() as u64),
+        UnixNanos::from(expiration.timestamp_nanos_opt().unwrap() as u64),
         price_precision,
         size_precision,
         price_increment,
@@ -502,8 +495,18 @@ pub fn futures_contract_es(
     activation: Option<UnixNanos>,
     expiration: Option<UnixNanos>,
 ) -> FuturesContract {
-    let activation = activation.unwrap_or(UnixNanos::from(timestamp(2021, 9, 10, 0, 0, 0)));
-    let expiration = expiration.unwrap_or(UnixNanos::from(timestamp(2021, 12, 17, 0, 0, 0)));
+    let activation = activation.unwrap_or(UnixNanos::from(
+        Utc.with_ymd_and_hms(2021, 9, 10, 0, 0, 0)
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap() as u64,
+    ));
+    let expiration = expiration.unwrap_or(UnixNanos::from(
+        Utc.with_ymd_and_hms(2021, 12, 17, 0, 0, 0)
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap() as u64,
+    ));
     FuturesContract::new(
         InstrumentId::from("ESZ21.GLBX"),
         Symbol::from("ESZ21"),
@@ -534,8 +537,8 @@ pub fn futures_contract_es(
 
 #[fixture]
 pub fn futures_spread_es() -> FuturesSpread {
-    let activation = timestamp(2022, 6, 21, 13, 30, 0);
-    let expiration = timestamp(2024, 6, 21, 13, 30, 0);
+    let activation = Utc.with_ymd_and_hms(2022, 6, 21, 13, 30, 0).unwrap();
+    let expiration = Utc.with_ymd_and_hms(2024, 6, 21, 13, 30, 0).unwrap();
     FuturesSpread::new(
         InstrumentId::from("ESM4-ESU4.GLBX"),
         Symbol::from("ESM4-ESU4"),
@@ -543,8 +546,8 @@ pub fn futures_spread_es() -> FuturesSpread {
         Some(Ustr::from("XCME")),
         Ustr::from("ES"),
         Ustr::from("EQ"),
-        UnixNanos::from(activation),
-        UnixNanos::from(expiration),
+        UnixNanos::from(activation.timestamp_nanos_opt().unwrap() as u64),
+        UnixNanos::from(expiration.timestamp_nanos_opt().unwrap() as u64),
         Currency::USD(),
         2,
         Price::from("0.01"),
@@ -567,8 +570,8 @@ pub fn futures_spread_es() -> FuturesSpread {
 
 #[fixture]
 pub fn option_contract_appl() -> OptionContract {
-    let activation = timestamp(2021, 9, 17, 0, 0, 0);
-    let expiration = timestamp(2021, 12, 17, 0, 0, 0);
+    let activation = Utc.with_ymd_and_hms(2021, 9, 17, 0, 0, 0).unwrap();
+    let expiration = Utc.with_ymd_and_hms(2021, 12, 17, 0, 0, 0).unwrap();
     OptionContract::new(
         InstrumentId::from("AAPL211217C00150000.OPRA"),
         Symbol::from("AAPL211217C00150000"),
@@ -578,8 +581,8 @@ pub fn option_contract_appl() -> OptionContract {
         OptionKind::Call,
         Price::from("149.0"),
         Currency::USD(),
-        UnixNanos::from(activation),
-        UnixNanos::from(expiration),
+        UnixNanos::from(activation.timestamp_nanos_opt().unwrap() as u64),
+        UnixNanos::from(expiration.timestamp_nanos_opt().unwrap() as u64),
         2,
         Price::from("0.01"),
         Quantity::from(1),
@@ -601,8 +604,8 @@ pub fn option_contract_appl() -> OptionContract {
 
 #[fixture]
 pub fn option_spread() -> OptionSpread {
-    let activation = timestamp(2023, 11, 6, 20, 54, 7);
-    let expiration = timestamp(2024, 2, 23, 22, 59, 0);
+    let activation = Utc.with_ymd_and_hms(2023, 11, 6, 20, 54, 7).unwrap();
+    let expiration = Utc.with_ymd_and_hms(2024, 2, 23, 22, 59, 0).unwrap();
     OptionSpread::new(
         InstrumentId::from("UD:U$: GN 2534559.GLBX"),
         Symbol::from("UD:U$: GN 2534559"),
@@ -610,8 +613,8 @@ pub fn option_spread() -> OptionSpread {
         Some(Ustr::from("XCME")),
         Ustr::from("SR3"),
         Ustr::from("GN"),
-        UnixNanos::from(activation),
-        UnixNanos::from(expiration),
+        UnixNanos::from(activation.timestamp_nanos_opt().unwrap() as u64),
+        UnixNanos::from(expiration.timestamp_nanos_opt().unwrap() as u64),
         Currency::USD(),
         2,
         Price::from("0.01"),
@@ -634,8 +637,8 @@ pub fn option_spread() -> OptionSpread {
 
 #[fixture]
 pub fn crypto_futures_spread_btc_deribit() -> CryptoFuturesSpread {
-    let activation = timestamp(2026, 5, 12, 0, 0, 0);
-    let expiration = timestamp(2026, 5, 19, 8, 0, 0);
+    let activation = Utc.with_ymd_and_hms(2026, 5, 12, 0, 0, 0).unwrap();
+    let expiration = Utc.with_ymd_and_hms(2026, 5, 19, 8, 0, 0).unwrap();
     CryptoFuturesSpread::new(
         InstrumentId::from("BTC-FS-19MAY26_PERP.DERIBIT"),
         Symbol::from("BTC-FS-19MAY26_PERP"),
@@ -644,8 +647,8 @@ pub fn crypto_futures_spread_btc_deribit() -> CryptoFuturesSpread {
         Currency::BTC(),
         false,
         Ustr::from("FS"),
-        UnixNanos::from(activation),
-        UnixNanos::from(expiration),
+        UnixNanos::from(activation.timestamp_nanos_opt().unwrap() as u64),
+        UnixNanos::from(expiration.timestamp_nanos_opt().unwrap() as u64),
         1,
         0,
         Price::from("0.5"),
@@ -671,8 +674,8 @@ pub fn crypto_futures_spread_btc_deribit() -> CryptoFuturesSpread {
 
 #[fixture]
 pub fn crypto_option_spread_btc_deribit() -> CryptoOptionSpread {
-    let activation = timestamp(2026, 5, 12, 0, 0, 0);
-    let expiration = timestamp(2026, 5, 19, 8, 0, 0);
+    let activation = Utc.with_ymd_and_hms(2026, 5, 12, 0, 0, 0).unwrap();
+    let expiration = Utc.with_ymd_and_hms(2026, 5, 19, 8, 0, 0).unwrap();
     CryptoOptionSpread::new(
         InstrumentId::from("BTC-CS-19MAY26-70000_75000.DERIBIT"),
         Symbol::from("BTC-CS-19MAY26-70000_75000"),
@@ -681,8 +684,8 @@ pub fn crypto_option_spread_btc_deribit() -> CryptoOptionSpread {
         Currency::BTC(),
         false,
         Ustr::from("CS"),
-        UnixNanos::from(activation),
-        UnixNanos::from(expiration),
+        UnixNanos::from(activation.timestamp_nanos_opt().unwrap() as u64),
+        UnixNanos::from(expiration.timestamp_nanos_opt().unwrap() as u64),
         4,
         1,
         Price::from("0.0001"),
@@ -717,12 +720,22 @@ pub fn betting() -> BettingInstrument {
     let event_id = 29_678_534;
     let event_name = Ustr::from("NFL");
     let event_country_code = Ustr::from("GB");
-    let event_open_date = UnixNanos::from(timestamp(2022, 2, 7, 23, 30, 0));
+    let event_open_date = UnixNanos::from(
+        Utc.with_ymd_and_hms(2022, 2, 7, 23, 30, 0)
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap() as u64,
+    );
     let betting_type = Ustr::from("ODDS");
     let market_id = Ustr::from("1-123456789");
     let market_name = Ustr::from("AFC Conference Winner");
     let market_type = Ustr::from("SPECIAL");
-    let market_start_time = UnixNanos::from(timestamp(2022, 2, 7, 23, 30, 0));
+    let market_start_time = UnixNanos::from(
+        Utc.with_ymd_and_hms(2022, 2, 7, 23, 30, 0)
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap() as u64,
+    );
     let selection_id = 50214;
     let selection_name = Ustr::from("Kansas City Chiefs");
     let selection_handicap = 0.0;
@@ -898,8 +911,8 @@ pub fn binary_option() -> BinaryOption {
     let raw_symbol = Symbol::new(
         "0x12a0cb60174abc437bf1178367c72d11f069e1a3add20b148fb0ab4279b772b2-92544998123698303655208967887569360731013655782348975589292031774495159624905",
     );
-    let activation = timestamp(2023, 11, 6, 20, 54, 7);
-    let expiration = timestamp(2024, 2, 23, 22, 59, 0);
+    let activation = Utc.with_ymd_and_hms(2023, 11, 6, 20, 54, 7).unwrap();
+    let expiration = Utc.with_ymd_and_hms(2024, 2, 23, 22, 59, 0).unwrap();
     let price_increment = Price::from("0.001");
     let size_increment = Quantity::from("0.01");
     BinaryOption::new(
@@ -907,8 +920,8 @@ pub fn binary_option() -> BinaryOption {
         raw_symbol,
         AssetClass::Alternative,
         Currency::USDC(),
-        UnixNanos::from(activation),
-        UnixNanos::from(expiration),
+        UnixNanos::from(activation.timestamp_nanos_opt().unwrap() as u64),
+        UnixNanos::from(expiration.timestamp_nanos_opt().unwrap() as u64),
         price_increment.precision,
         size_increment.precision,
         price_increment,

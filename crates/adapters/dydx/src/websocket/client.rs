@@ -147,7 +147,7 @@ struct ConnectionSlot {
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.dydx", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.dydx", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -656,6 +656,7 @@ impl DydxWebSocketClient {
         let client = WebSocketClient::connect(
             cfg,
             Some(message_handler),
+            None,
             None,
             vec![],
             Some(*DYDX_WS_SUBSCRIPTION_QUOTA),

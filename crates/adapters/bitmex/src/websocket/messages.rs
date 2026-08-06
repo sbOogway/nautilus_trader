@@ -18,13 +18,10 @@
 use std::collections::HashMap;
 
 use ahash::AHashMap;
-use jiff::Timestamp;
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use serde::{
-    Deserialize, Deserializer, Serialize,
-    de::{self, DeserializeOwned, Error as _},
-};
-use serde_json::{Value, value::RawValue};
+use serde::{Deserialize, Deserializer, Serialize, de};
+use serde_json::Value;
 use strum::Display;
 use ustr::Ustr;
 use uuid::Uuid;
@@ -32,12 +29,9 @@ use uuid::Uuid;
 use super::enums::{
     BitmexAction, BitmexSide, BitmexTickDirection, BitmexWsAuthAction, BitmexWsOperation,
 };
-use crate::common::{
-    enums::{
-        BitmexContingencyType, BitmexExecInstruction, BitmexExecType, BitmexLiquidityIndicator,
-        BitmexOrderStatus, BitmexOrderType, BitmexPegPriceType, BitmexTimeInForce,
-    },
-    serialization::optional_decimal,
+use crate::common::enums::{
+    BitmexContingencyType, BitmexExecInstruction, BitmexExecType, BitmexLiquidityIndicator,
+    BitmexOrderStatus, BitmexOrderType, BitmexPegPriceType, BitmexTimeInForce,
 };
 
 /// Custom deserializer for comma-separated `ExecInstruction` values.
@@ -112,7 +106,6 @@ pub enum BitmexWsMessage {
 #[serde(untagged)]
 pub(super) enum BitmexWsFrame {
     /// Table websocket message.
-    #[serde(skip)]
     Table(BitmexTableMessage),
     /// Initial welcome message received when connecting to the WebSocket.
     Welcome {
@@ -121,7 +114,7 @@ pub(super) enum BitmexWsFrame {
         /// API version string.
         version: String,
         /// Server timestamp.
-        timestamp: Timestamp,
+        timestamp: DateTime<Utc>,
         /// Link to API documentation.
         docs: String,
         /// Whether heartbeat is enabled for this connection.
@@ -170,7 +163,9 @@ pub struct BitmexRateLimit {
 }
 
 /// Represents table-based messages.
-#[derive(Debug, Display)]
+#[derive(Debug, Display, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(tag = "table")]
 pub enum BitmexTableMessage {
     OrderBookL2 {
         action: BitmexAction,
@@ -214,6 +209,7 @@ pub enum BitmexTableMessage {
     },
     Order {
         action: BitmexAction,
+        #[serde(deserialize_with = "deserialize_order_data")]
         data: Vec<OrderData>,
     },
     Execution {
@@ -246,128 +242,6 @@ pub enum BitmexTableMessage {
     },
 }
 
-#[derive(Deserialize)]
-struct BitmexTableTag {
-    table: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct BitmexTableEnvelope<'a> {
-    table: &'a str,
-    action: BitmexAction,
-    #[serde(borrow)]
-    data: &'a RawValue,
-}
-
-impl BitmexTableMessage {
-    pub(super) fn from_json_if_table(json: &str) -> serde_json::Result<Option<Self>> {
-        let tag: BitmexTableTag = serde_json::from_str(json)?;
-        if tag.table.is_none() {
-            return Ok(None);
-        }
-
-        Self::from_json(json).map(Some)
-    }
-
-    fn from_json(json: &str) -> serde_json::Result<Self> {
-        let envelope: BitmexTableEnvelope = serde_json::from_str(json)?;
-        let action = envelope.action;
-        let data = envelope.data;
-
-        match envelope.table {
-            "orderBookL2" => Ok(Self::OrderBookL2 {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "orderBookL2_25" => Ok(Self::OrderBookL2_25 {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "orderBook10" => Ok(Self::OrderBook10 {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "quote" => Ok(Self::Quote {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "trade" => Ok(Self::Trade {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "tradeBin1m" => Ok(Self::TradeBin1m {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "tradeBin5m" => Ok(Self::TradeBin5m {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "tradeBin1h" => Ok(Self::TradeBin1h {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "tradeBin1d" => Ok(Self::TradeBin1d {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "instrument" => Ok(Self::Instrument {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "order" => Ok(Self::Order {
-                action,
-                data: parse_order_data(data)?,
-            }),
-            "execution" => Ok(Self::Execution {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "position" => Ok(Self::Position {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "wallet" => Ok(Self::Wallet {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "margin" => Ok(Self::Margin {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "funding" => Ok(Self::Funding {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "insurance" => Ok(Self::Insurance {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            "liquidation" => Ok(Self::Liquidation {
-                action,
-                data: parse_table_data(data)?,
-            }),
-            table => Err(serde_json::Error::custom(format!(
-                "unknown BitMEX table `{table}`"
-            ))),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for BitmexTableMessage {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = Box::<RawValue>::deserialize(deserializer)?;
-        Self::from_json(raw.get()).map_err(D::Error::custom)
-    }
-}
-
-fn parse_table_data<T: DeserializeOwned>(raw: &RawValue) -> serde_json::Result<Vec<T>> {
-    serde_json::from_str(raw.get())
-}
-
 /// Represents a single order book entry in the BitMEX order book.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -383,9 +257,9 @@ pub struct BitmexOrderBookMsg {
     /// Price level of the order.
     pub price: f64,
     /// Timestamp of the update.
-    pub timestamp: Timestamp,
+    pub timestamp: DateTime<Utc>,
     /// Timestamp of the transaction.
-    pub transact_time: Timestamp,
+    pub transact_time: DateTime<Utc>,
     pub pool: Option<Ustr>,
 }
 
@@ -400,7 +274,7 @@ pub struct BitmexOrderBook10Msg {
     /// Array of ask levels, each containing [price, size].
     pub asks: Vec<[f64; 2]>,
     /// Timestamp of the orderbook snapshot.
-    pub timestamp: Timestamp,
+    pub timestamp: DateTime<Utc>,
     pub pool: Option<Ustr>,
 }
 
@@ -419,7 +293,7 @@ pub struct BitmexQuoteMsg {
     /// Size of best ask.
     pub ask_size: Option<u64>,
     /// Timestamp of the quote.
-    pub timestamp: Timestamp,
+    pub timestamp: DateTime<Utc>,
     pub pool: Option<Ustr>,
 }
 
@@ -428,7 +302,7 @@ pub struct BitmexQuoteMsg {
 #[serde(rename_all = "camelCase")]
 pub struct BitmexTradeMsg {
     /// Timestamp of the trade.
-    pub timestamp: Timestamp,
+    pub timestamp: DateTime<Utc>,
     /// The instrument symbol.
     pub symbol: Ustr,
     /// Side of the trade ("Buy" or "Sell").
@@ -458,7 +332,7 @@ pub struct BitmexTradeMsg {
 #[serde(rename_all = "camelCase")]
 pub struct BitmexTradeBinMsg {
     /// Start time of the bin.
-    pub timestamp: Timestamp,
+    pub timestamp: DateTime<Utc>,
     /// Trading instrument symbol.
     pub symbol: Ustr,
     /// Opening price for the period.
@@ -495,11 +369,11 @@ pub struct BitmexInstrumentMsg {
     pub state: Option<Ustr>,
     #[serde(rename = "typ")]
     pub instrument_type: Option<Ustr>,
-    pub listing: Option<Timestamp>,
-    pub front: Option<Timestamp>,
-    pub expiry: Option<Timestamp>,
-    pub settle: Option<Timestamp>,
-    pub listed_settle: Option<Timestamp>,
+    pub listing: Option<DateTime<Utc>>,
+    pub front: Option<DateTime<Utc>>,
+    pub expiry: Option<DateTime<Utc>>,
+    pub settle: Option<DateTime<Utc>>,
+    pub listed_settle: Option<DateTime<Utc>>,
     pub position_currency: Option<Ustr>,
     pub underlying: Option<Ustr>,
     pub quote_currency: Option<Ustr>,
@@ -528,8 +402,8 @@ pub struct BitmexInstrumentMsg {
     pub funding_base_symbol: Option<Ustr>,
     pub funding_quote_symbol: Option<Ustr>,
     pub funding_premium_symbol: Option<Ustr>,
-    pub funding_timestamp: Option<Timestamp>,
-    pub funding_interval: Option<Timestamp>,
+    pub funding_timestamp: Option<DateTime<Utc>>,
+    pub funding_interval: Option<DateTime<Utc>>,
     #[serde(default, with = "rust_decimal::serde::float_option")]
     pub funding_rate: Option<Decimal>,
     #[serde(default, with = "rust_decimal::serde::float_option")]
@@ -546,7 +420,7 @@ pub struct BitmexInstrumentMsg {
     pub fair_basis: Option<f64>,
     pub fair_basis_rate: Option<f64>,
     pub fair_price: Option<f64>,
-    pub timestamp: Timestamp,
+    pub timestamp: DateTime<Utc>,
 }
 
 impl TryFrom<BitmexInstrumentMsg> for crate::http::models::BitmexInstrument {
@@ -708,12 +582,10 @@ pub struct BitmexOrderUpdateMsg {
     pub currency: Option<Ustr>,
     #[serde(default)]
     pub text: FieldUpdate<Ustr>,
-    pub transact_time: Option<Timestamp>,
-    pub timestamp: Option<Timestamp>,
+    pub transact_time: Option<DateTime<Utc>>,
+    pub timestamp: Option<DateTime<Utc>>,
     pub leaves_qty: Option<i64>,
     pub cum_qty: Option<i64>,
-    #[serde(default, deserialize_with = "deserialize_decimal_update")]
-    pub avg_px: FieldUpdate<Decimal>,
     pub ord_status: Option<BitmexOrderStatus>,
 }
 
@@ -742,16 +614,6 @@ where
             None => Self::Null,
         })
     }
-}
-
-fn deserialize_decimal_update<'de, D>(deserializer: D) -> Result<FieldUpdate<Decimal>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(match optional_decimal::deserialize(deserializer)? {
-        Some(value) => FieldUpdate::Value(value),
-        None => FieldUpdate::Null,
-    })
 }
 
 /// Represents a full order message from the WebSocket stream.
@@ -787,11 +649,10 @@ pub struct BitmexOrderMsg {
     pub ord_rej_reason: Option<Ustr>,
     pub leaves_qty: i64,
     pub cum_qty: i64,
-    #[serde(default, with = "optional_decimal")]
-    pub avg_px: Option<Decimal>,
+    pub avg_px: Option<f64>,
     pub text: Option<Ustr>,
-    pub transact_time: Timestamp,
-    pub timestamp: Timestamp,
+    pub transact_time: DateTime<Utc>,
+    pub timestamp: DateTime<Utc>,
     pub strategy: Option<Ustr>,
     pub pool: Option<Ustr>,
 }
@@ -907,7 +768,6 @@ impl BitmexOrderUpdateMsg {
         if let Some(cum_qty) = self.cum_qty {
             order.cum_qty = cum_qty;
         }
-        self.avg_px.apply_to(&mut order.avg_px);
 
         if let Some(ord_status) = self.ord_status {
             order.ord_status = ord_status;
@@ -941,18 +801,23 @@ impl<T> FieldUpdate<T> {
     }
 }
 
-fn parse_order_data(raw: &RawValue) -> serde_json::Result<Vec<OrderData>> {
-    let raw_values: Vec<Box<RawValue>> = serde_json::from_str(raw.get())?;
+/// Custom deserializer for order data that tries to deserialize as full message first,
+/// then falls back to update message if fields are missing.
+fn deserialize_order_data<'de, D>(deserializer: D) -> Result<Vec<OrderData>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw_values: Vec<serde_json::Value> = Vec::deserialize(deserializer)?;
     let mut result = Vec::new();
 
     for value in raw_values {
         // Try to deserialize as full message first
-        if let Ok(full_msg) = serde_json::from_str::<BitmexOrderMsg>(value.get()) {
+        if let Ok(full_msg) = serde_json::from_value::<BitmexOrderMsg>(value.clone()) {
             result.push(OrderData::Full(full_msg));
-        } else if let Ok(update_msg) = serde_json::from_str::<BitmexOrderUpdateMsg>(value.get()) {
+        } else if let Ok(update_msg) = serde_json::from_value::<BitmexOrderUpdateMsg>(value) {
             result.push(OrderData::Update(update_msg));
         } else {
-            return Err(serde_json::Error::custom(
+            return Err(de::Error::custom(
                 "Failed to deserialize order data as either full or update message",
             ));
         }
@@ -1013,8 +878,8 @@ pub struct BitmexExecutionMsg {
     pub exec_comm: Option<i64>,
     pub home_notional: Option<f64>,
     pub foreign_notional: Option<f64>,
-    pub transact_time: Option<Timestamp>,
-    pub timestamp: Option<Timestamp>,
+    pub transact_time: Option<DateTime<Utc>>,
+    pub timestamp: Option<DateTime<Utc>>,
     pub strategy: Option<Ustr>,
     pub pool: Option<Ustr>,
     pub exec_comm_ccy: Option<Ustr>,
@@ -1040,7 +905,7 @@ pub struct BitmexPositionMsg {
     pub prev_realised_pnl: Option<i64>,
     pub prev_unrealised_pnl: Option<i64>,
     pub prev_close_price: Option<f64>,
-    pub opening_timestamp: Option<Timestamp>,
+    pub opening_timestamp: Option<DateTime<Utc>>,
     pub opening_qty: Option<i64>,
     pub opening_cost: Option<i64>,
     pub opening_comm: Option<i64>,
@@ -1057,7 +922,7 @@ pub struct BitmexPositionMsg {
     pub exec_qty: Option<i64>,
     pub exec_cost: Option<i64>,
     pub exec_comm: Option<i64>,
-    pub current_timestamp: Option<Timestamp>,
+    pub current_timestamp: Option<DateTime<Utc>>,
     pub current_qty: Option<i64>,
     pub current_cost: Option<i64>,
     pub current_comm: Option<i64>,
@@ -1107,7 +972,7 @@ pub struct BitmexPositionMsg {
     pub margin_call_price: Option<f64>,
     pub liquidation_price: Option<f64>,
     pub bankrupt_price: Option<f64>,
-    pub timestamp: Option<Timestamp>,
+    pub timestamp: Option<DateTime<Utc>>,
     pub last_price: Option<f64>,
     pub last_value: Option<i64>,
     pub strategy: Option<Ustr>,
@@ -1123,7 +988,7 @@ pub struct BitmexWalletMsg {
     pub prev_transfer_in: Option<i64>,
     pub prev_transfer_out: Option<i64>,
     pub prev_amount: Option<i64>,
-    pub prev_timestamp: Option<Timestamp>,
+    pub prev_timestamp: Option<DateTime<Utc>>,
     pub delta_deposited: Option<i64>,
     pub delta_withdrawn: Option<i64>,
     pub delta_transfer_in: Option<i64>,
@@ -1137,7 +1002,7 @@ pub struct BitmexWalletMsg {
     pub pending_credit: Option<i64>,
     pub pending_debit: Option<i64>,
     pub confirmed_debit: Option<i64>,
-    pub timestamp: Option<Timestamp>,
+    pub timestamp: Option<DateTime<Utc>>,
     pub addr: Option<Ustr>,
     pub script: Option<Ustr>,
     pub withdrawal_lock: Option<Vec<Ustr>>,
@@ -1198,7 +1063,7 @@ pub struct BitmexMarginMsg {
     /// Taker fee discount
     pub taker_fee_discount: Option<f64>,
     /// Timestamp of the margin update
-    pub timestamp: Timestamp,
+    pub timestamp: DateTime<Utc>,
     /// Foreign margin balance
     pub foreign_margin_balance: Option<i64>,
     /// Foreign margin requirement
@@ -1210,11 +1075,11 @@ pub struct BitmexMarginMsg {
 #[serde(rename_all = "camelCase")]
 pub struct BitmexFundingMsg {
     /// Timestamp of the funding update.
-    pub timestamp: Timestamp,
+    pub timestamp: DateTime<Utc>,
     /// The instrument symbol the funding applies to.
     pub symbol: Ustr,
     /// The interval for this funding.
-    pub funding_interval: Timestamp,
+    pub funding_interval: DateTime<Utc>,
     /// The funding rate for this interval.
     #[serde(with = "rust_decimal::serde::float")]
     pub funding_rate: Decimal,
@@ -1230,7 +1095,7 @@ pub struct BitmexInsuranceMsg {
     /// The currency of the insurance fund.
     pub currency: Ustr,
     /// Timestamp of the update.
-    pub timestamp: Timestamp,
+    pub timestamp: DateTime<Utc>,
     /// Current balance of the insurance wallet.
     pub wallet_balance: i64,
 }
@@ -1394,7 +1259,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_order_sparse_update_deserializes_exactly() {
+    fn test_order_key_only_update_deserializes() {
         let message: BitmexTableMessage = serde_json::from_str(include_str!(
             "../../test_data/ws_order_update_canceled.json"
         ))
@@ -1412,27 +1277,6 @@ mod tests {
             Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap()
         );
         assert_eq!(update.ord_status, Some(BitmexOrderStatus::Canceled));
-        assert_eq!(
-            update.avg_px,
-            FieldUpdate::Value("30000.500000000004".parse::<Decimal>().unwrap())
-        );
-    }
-
-    #[rstest]
-    fn test_order_avg_px_deserializes_exactly() {
-        let message: BitmexTableMessage =
-            serde_json::from_str(include_str!("../../test_data/ws_order_avg_px.json")).unwrap();
-        let BitmexTableMessage::Order { data, .. } = message else {
-            panic!("expected order table message");
-        };
-        let OrderData::Full(order) = &data[0] else {
-            panic!("expected full order message");
-        };
-
-        assert_eq!(
-            order.avg_px,
-            Some("30000.500000000004".parse::<Decimal>().unwrap())
-        );
     }
 
     #[rstest]
@@ -1460,10 +1304,6 @@ mod tests {
         assert_eq!(canceled.symbol, original.symbol);
         assert_eq!(canceled.price, original.price);
         assert_eq!(canceled.text, original.text);
-        assert_eq!(
-            canceled.avg_px,
-            Some("30000.500000000004".parse::<Decimal>().unwrap())
-        );
         assert_eq!(canceled.ord_status, BitmexOrderStatus::Canceled);
         assert!(cache.rows.is_empty());
     }

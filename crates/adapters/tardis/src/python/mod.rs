@@ -86,7 +86,7 @@ fn extract_tardis_data_config(
     }
 }
 
-/// Exposed through `nautilus_trader.adapters.tardis`.
+/// Loaded as `nautilus_pyo3.tardis`.
 ///
 /// # Errors
 ///

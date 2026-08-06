@@ -34,7 +34,7 @@ use crate::common::enums::{BinanceEnvironment, BinanceMarginType, BinanceProduct
 #[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.binance", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.binance", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -143,7 +143,11 @@ fn validate_filter_strings(name: &str, value: &serde_json::Value) -> anyhow::Res
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.binance", eq, from_py_object)
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.binance",
+        eq,
+        from_py_object
+    )
 )]
 #[cfg_attr(
     feature = "python",
@@ -164,7 +168,7 @@ pub enum BinanceSpotMarketDataMode {
 #[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.binance", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.binance", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -283,7 +287,7 @@ impl ClientConfig for BinanceDataClientConfig {
 #[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.binance", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.binance", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",

@@ -46,7 +46,7 @@ use std::{
 
 use ahash::{AHashMap, AHashSet};
 use anyhow::Context;
-use jiff::Timestamp;
+use chrono::{DateTime, Utc};
 use nautilus_common::cache::InstrumentLookupError;
 use nautilus_core::{
     AtomicMap, AtomicTime, UnixNanos, consts::NAUTILUS_USER_AGENT,
@@ -83,32 +83,30 @@ use ustr::Ustr;
 use super::{
     error::OKXHttpError,
     models::{
-        OKXAccount, OKXAmendAlgoOrderRequest, OKXAmendAlgoOrderResponse, OKXAmendOrderRequest,
-        OKXAttachAlgoOrdRequest, OKXCancelAlgoOrderRequest, OKXCancelAlgoOrderResponse,
-        OKXCancelAllSpreadOrdersRequest, OKXCancelOrderRequest, OKXCancelOrderResponse,
-        OKXCancelSpreadOrderRequest, OKXEventContractEvent, OKXEventContractMarket,
-        OKXEventContractSeries, OKXFeeRate, OKXFundingRateHistory, OKXIndexTicker, OKXMarkPrice,
-        OKXOptionSummary, OKXOrderAlgo, OKXOrderBookSnapshot, OKXOrderHistory,
-        OKXPlaceAlgoOrderRequest, OKXPlaceAlgoOrderResponse, OKXPlaceOrderRequest,
-        OKXPlaceOrderResponse, OKXPlaceSpreadOrderRequest, OKXPosition, OKXPositionHistory,
-        OKXPositionTier, OKXPriceLimit, OKXRpiOrderBookSnapshot, OKXServerTime, OKXSpread,
+        OKXAccount, OKXAmendAlgoOrderRequest, OKXAmendAlgoOrderResponse, OKXAttachAlgoOrdRequest,
+        OKXCancelAlgoOrderRequest, OKXCancelAlgoOrderResponse, OKXCancelAllSpreadOrdersRequest,
+        OKXCancelOrderRequest, OKXCancelOrderResponse, OKXCancelSpreadOrderRequest,
+        OKXEventContractEvent, OKXEventContractMarket, OKXEventContractSeries, OKXFeeRate,
+        OKXFundingRateHistory, OKXIndexTicker, OKXMarkPrice, OKXOptionSummary, OKXOrderAlgo,
+        OKXOrderBookSnapshot, OKXOrderHistory, OKXPlaceAlgoOrderRequest, OKXPlaceAlgoOrderResponse,
+        OKXPlaceOrderRequest, OKXPlaceOrderResponse, OKXPlaceSpreadOrderRequest, OKXPosition,
+        OKXPositionHistory, OKXPositionTier, OKXPriceLimit, OKXServerTime, OKXSpread,
         OKXSpreadOrder, OKXSpreadTrade, OKXTransactionDetail,
     },
     query::{
-        GetAlgoOrderParams, GetAlgoOrderParamsBuilder, GetAlgoOrdersParams,
-        GetAlgoOrdersParamsBuilder, GetCandlesticksParams, GetCandlesticksParamsBuilder,
-        GetEventContractEventsParams, GetEventContractMarketsParams, GetEventContractSeriesParams,
-        GetFundingRateHistoryParams, GetIndexTickerParams, GetIndexTickerParamsBuilder,
-        GetInstrumentsParams, GetInstrumentsParamsBuilder, GetMarkPriceParams,
-        GetMarkPriceParamsBuilder, GetOptionSummaryParams, GetOrderBookParams,
+        GetAlgoOrdersParams, GetAlgoOrdersParamsBuilder, GetCandlesticksParams,
+        GetCandlesticksParamsBuilder, GetEventContractEventsParams, GetEventContractMarketsParams,
+        GetEventContractSeriesParams, GetFundingRateHistoryParams, GetIndexTickerParams,
+        GetIndexTickerParamsBuilder, GetInstrumentsParams, GetInstrumentsParamsBuilder,
+        GetMarkPriceParams, GetMarkPriceParamsBuilder, GetOptionSummaryParams, GetOrderBookParams,
         GetOrderHistoryParams, GetOrderHistoryParamsBuilder, GetOrderListParams,
         GetOrderListParamsBuilder, GetPositionTiersParams, GetPositionsHistoryParams,
         GetPositionsParams, GetPositionsParamsBuilder, GetPriceLimitParams,
-        GetPriceLimitParamsBuilder, GetRpiOrderBookParams, GetSpreadOrderParams,
-        GetSpreadOrdersParams, GetSpreadOrdersParamsBuilder, GetSpreadTradesParams,
-        GetSpreadTradesParamsBuilder, GetSpreadsParams, GetTradeFeeParams, GetTradesParams,
-        GetTradesParamsBuilder, GetTransactionDetailsParams, GetTransactionDetailsParamsBuilder,
-        SetPositionModeParams, SetPositionModeParamsBuilder,
+        GetPriceLimitParamsBuilder, GetSpreadOrderParams, GetSpreadOrdersParams,
+        GetSpreadOrdersParamsBuilder, GetSpreadTradesParams, GetSpreadTradesParamsBuilder,
+        GetSpreadsParams, GetTradeFeeParams, GetTradesParams, GetTradesParamsBuilder,
+        GetTransactionDetailsParams, GetTransactionDetailsParamsBuilder, SetPositionModeParams,
+        SetPositionModeParamsBuilder,
     },
 };
 use crate::{
@@ -119,8 +117,8 @@ use crate::{
         },
         credential::Credential,
         enums::{
-            OKXAlgoOrderStatus, OKXAlgoOrderType, OKXContractType, OKXEnvironment,
-            OKXInstrumentStatus, OKXInstrumentType, OKXOrderType, OKXPositionMode, OKXPositionSide,
+            OKXAlgoOrderType, OKXContractType, OKXEnvironment, OKXInstrumentStatus,
+            OKXInstrumentType, OKXOrderStatus, OKXOrderType, OKXPositionMode, OKXPositionSide,
             OKXSide, OKXTargetCurrency, OKXTradeMode, OKXTriggerType,
             conditional_order_to_algo_type,
         },
@@ -133,7 +131,6 @@ use crate::{
             parse_order_status_report, parse_position_status_report, parse_price, parse_quantity,
             parse_spot_margin_position_from_balance, parse_spread_fill_report,
             parse_spread_instrument, parse_spread_order_status_report, parse_trade_tick,
-            prefer_rpi_response_fields,
         },
     },
     http::{
@@ -144,7 +141,6 @@ use crate::{
 };
 
 const OKX_SUCCESS_CODE: &str = "0";
-const OKX_PARTIAL_SUCCESS_CODE: &str = "2";
 
 #[derive(Debug, Error)]
 #[error("Failed to parse instrument {symbol}: {source}")]
@@ -216,33 +212,15 @@ fn resolve_okx_error_message(response_body: &[u8], top_level_msg: &str) -> Strin
 fn deserialize_okx_response<T: DeserializeOwned>(
     response_body: &[u8],
 ) -> Result<OKXResponse<T>, serde_json::Error> {
-    let contains_legacy_rpi_name = [br#""elp""#.as_slice(), br#""elpMaker""#.as_slice()]
-        .iter()
-        .any(|name| {
-            response_body
-                .windows(name.len())
-                .any(|window| window == *name)
-        });
-
-    if !contains_legacy_rpi_name {
-        return serde_json::from_slice(response_body);
-    }
-
-    let mut value: serde_json::Value = serde_json::from_slice(response_body)?;
-    prefer_rpi_response_fields(&mut value);
-    serde_json::from_value(value)
+    serde_json::from_slice(response_body)
 }
 
 #[cfg(test)]
 mod tests {
     use anyhow::Context;
     use rstest::rstest;
-    use rust_decimal::Decimal;
 
-    use super::{
-        OKXInstrumentDefinitionError, deserialize_okx_response, resolve_okx_error_message,
-    };
-    use crate::http::models::OKXFeeRate;
+    use super::{OKXInstrumentDefinitionError, resolve_okx_error_message};
 
     #[rstest]
     fn test_instrument_definition_error_survives_anyhow_context_downcast() {
@@ -274,31 +252,6 @@ mod tests {
             resolve_okx_error_message(body, "All operations failed"),
             "Test detailed failure",
         );
-    }
-
-    #[rstest]
-    fn test_rpi_response_fields_prefer_current_names_over_transition_aliases() {
-        let response = br#"{
-            "code": "0",
-            "msg": "",
-            "data": [{
-                "level": "VIP1",
-                "taker": "-0.0005",
-                "maker": "-0.0002",
-                "takerU": "-0.0005",
-                "makerU": "-0.0002",
-                "rpiMaker": "-0.00015",
-                "elpMaker": "-0.00016",
-                "instType": "SPOT",
-                "category": "1",
-                "ts": "1785406500000"
-            }]
-        }"#;
-
-        let parsed = deserialize_okx_response::<OKXFeeRate>(response).unwrap();
-
-        assert_eq!(parsed.data.len(), 1);
-        assert_eq!(parsed.data[0].rpi_maker, Some(Decimal::new(-15, 5)));
     }
 
     #[rstest]
@@ -423,10 +376,6 @@ impl OKXRawHttpClient {
                 Quota::per_second(NonZeroU32::new(2).expect("non-zero")).expect("valid constant"),
             ),
             (
-                "okx:/api/v5/account/instruments".to_string(),
-                Quota::per_second(NonZeroU32::new(10).expect("non-zero")).expect("valid constant"),
-            ),
-            (
                 "okx:/api/v5/account/positions".to_string(),
                 Quota::per_second(NonZeroU32::new(5).expect("non-zero")).expect("valid constant"),
             ),
@@ -507,10 +456,6 @@ impl OKXRawHttpClient {
                 Quota::per_second(NonZeroU32::new(20).expect("non-zero")).expect("valid constant"),
             ),
             (
-                "okx:/api/v5/market/books-rpi".to_string(),
-                Quota::per_second(NonZeroU32::new(20).expect("non-zero")).expect("valid constant"),
-            ),
-            (
                 "okx:/api/v5/market/candles".to_string(),
                 Quota::per_second(NonZeroU32::new(20).expect("non-zero")).expect("valid constant"),
             ),
@@ -529,18 +474,6 @@ impl OKXRawHttpClient {
             (
                 "okx:/api/v5/trade/order".to_string(),
                 Quota::per_second(NonZeroU32::new(30).expect("non-zero")).expect("valid constant"),
-            ),
-            (
-                "okx:/api/v5/trade/batch-orders".to_string(),
-                Quota::per_second(NonZeroU32::new(7).expect("non-zero")).expect("valid constant"),
-            ),
-            (
-                "okx:/api/v5/trade/amend-order".to_string(),
-                Quota::per_second(NonZeroU32::new(30).expect("non-zero")).expect("valid constant"),
-            ),
-            (
-                "okx:/api/v5/trade/amend-batch-orders".to_string(),
-                Quota::per_second(NonZeroU32::new(7).expect("non-zero")).expect("valid constant"),
             ),
             (
                 "okx:/api/v5/trade/cancel-batch-orders".to_string(),
@@ -738,8 +671,9 @@ impl OKXRawHttpClient {
         let api_passphrase = credential.api_passphrase().to_string();
 
         // OKX requires milliseconds in the timestamp (ISO 8601 with milliseconds)
-        let now = Timestamp::now();
-        let timestamp = format!("{now:.3}");
+        let now = Utc::now();
+        let millis = now.timestamp_subsec_millis();
+        let timestamp = now.format("%Y-%m-%dT%H:%M:%S").to_string() + &format!(".{millis:03}Z");
         let signature = credential.sign_bytes(&timestamp, method.as_str(), path, body);
 
         let mut headers = HashMap::new();
@@ -775,12 +709,6 @@ impl OKXRawHttpClient {
         authenticate: bool,
     ) -> Result<Vec<T>, OKXHttpError> {
         let url = format!("{}{path}", self.base_url);
-        let accepts_partial_success = matches!(
-            path,
-            "/api/v5/trade/batch-orders"
-                | "/api/v5/trade/amend-batch-orders"
-                | "/api/v5/trade/cancel-batch-orders"
-        );
 
         // Pre-compute rate limit keys once outside the retry closure
         let rate_keys: Vec<String> = Self::rate_limit_keys(path)
@@ -844,10 +772,7 @@ impl OKXRawHttpClient {
                             OKXHttpError::JsonError(e.to_string())
                         })?;
 
-                    if okx_response.code != OKX_SUCCESS_CODE
-                        && !(accepts_partial_success
-                            && okx_response.code == OKX_PARTIAL_SUCCESS_CODE)
-                    {
+                    if okx_response.code != OKX_SUCCESS_CODE {
                         return Err(OKXHttpError::OkxError {
                             error_code: okx_response.code,
                             message: resolve_okx_error_message(&resp.body, &okx_response.msg),
@@ -986,30 +911,6 @@ impl OKXRawHttpClient {
             Some(&params),
             None,
             false,
-        )
-        .await
-    }
-
-    /// Requests account instrument configuration and trading permissions.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if authentication fails, the HTTP request fails, or the
-    /// response cannot be deserialized.
-    ///
-    /// # References
-    ///
-    /// <https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-instruments>
-    pub async fn get_account_instruments(
-        &self,
-        params: GetInstrumentsParams,
-    ) -> Result<Vec<OKXInstrument>, OKXHttpError> {
-        self.send_request(
-            Method::GET,
-            "/api/v5/account/instruments",
-            Some(&params),
-            None,
-            true,
         )
         .await
     }
@@ -1437,29 +1338,6 @@ impl OKXRawHttpClient {
         .await
     }
 
-    /// Requests a Retail Price Improvement order book snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the operation fails.
-    ///
-    /// # References
-    ///
-    /// <https://www.okx.com/docs-v5/en/#order-book-trading-market-data-get-rpi-order-book>
-    pub async fn get_rpi_order_book(
-        &self,
-        params: GetRpiOrderBookParams,
-    ) -> Result<Vec<OKXRpiOrderBookSnapshot>, OKXHttpError> {
-        self.send_request(
-            Method::GET,
-            "/api/v5/market/books-rpi",
-            Some(&params),
-            None,
-            false,
-        )
-        .await
-    }
-
     /// Requests funding rate history.
     ///
     /// # Errors
@@ -1586,29 +1464,6 @@ impl OKXRawHttpClient {
         self.send_request(
             Method::GET,
             "/api/v5/trade/order",
-            Some(&params),
-            None,
-            true,
-        )
-        .await
-    }
-
-    /// Retrieves a single algo order's details.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the operation fails.
-    ///
-    /// # References
-    ///
-    /// <https://www.okx.com/docs-v5/en/#order-book-trading-algo-trading-get-algo-order-details>
-    pub async fn get_algo_order(
-        &self,
-        params: GetAlgoOrderParams,
-    ) -> Result<Vec<OKXOrderAlgo>, OKXHttpError> {
-        self.send_request(
-            Method::GET,
-            "/api/v5/trade/order-algo",
             Some(&params),
             None,
             true,
@@ -1779,7 +1634,7 @@ impl OKXRawHttpClient {
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.adapters.okx", from_py_object)
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.okx", from_py_object)
 )]
 #[cfg_attr(
     feature = "python",
@@ -2580,9 +2435,7 @@ impl OKXHttpClient {
         &self,
         instrument_id: InstrumentId,
     ) -> anyhow::Result<MarkPriceUpdate> {
-        let inst = self.instrument_from_cache(instrument_id.symbol.inner())?;
         let mut params = GetMarkPriceParamsBuilder::default();
-        params.inst_type(okx_instrument_type(&inst)?);
         params.inst_id(instrument_id.symbol.inner());
         let params = params.build().map_err(|e| anyhow::anyhow!(e))?;
 
@@ -2595,6 +2448,7 @@ impl OKXHttpClient {
         let raw = resp
             .first()
             .ok_or_else(|| anyhow::anyhow!("No mark price returned from OKX"))?;
+        let inst = self.instrument_from_cache(instrument_id.symbol.inner())?;
         let ts_init = self.generate_ts_init();
 
         let mark_price =
@@ -2778,60 +2632,6 @@ impl OKXHttpClient {
         Ok(book)
     }
 
-    /// Requests an RPI order book snapshot for the `instrument_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP request fails or book parsing fails.
-    pub async fn request_rpi_book_snapshot(
-        &self,
-        instrument_id: InstrumentId,
-        depth: Option<u32>,
-    ) -> anyhow::Result<OrderBook> {
-        let inst = self.instrument_from_cache_by_id(instrument_id)?;
-        let price_precision = inst.price_precision();
-        let size_precision = inst.size_precision();
-        let params = GetRpiOrderBookParams {
-            inst_id: instrument_id.symbol.to_string(),
-            sz: depth,
-        };
-        let resp = self
-            .inner
-            .get_rpi_order_book(params)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
-        let snapshot = resp
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("No RPI order book returned from OKX"))?;
-        let ts_event = UnixNanos::from(snapshot.ts * NANOSECONDS_IN_MILLISECOND);
-        let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
-
-        for (i, level) in snapshot.bids.iter().enumerate() {
-            let price = Price::from_decimal_dp(level.0, price_precision)?;
-            let size = Quantity::from_decimal_dp(level.1, size_precision)?;
-            let order = BookOrder::new(OrderSide::Buy, price, size, i as u64);
-            book.add(order, 0, i as u64, ts_event);
-        }
-
-        let bids_len = snapshot.bids.len();
-        for (i, level) in snapshot.asks.iter().enumerate() {
-            let price = Price::from_decimal_dp(level.0, price_precision)?;
-            let size = Quantity::from_decimal_dp(level.1, size_precision)?;
-            let index = (bids_len + i) as u64;
-            let order = BookOrder::new(OrderSide::Sell, price, size, index);
-            book.add(order, 0, index, ts_event);
-        }
-
-        log::debug!(
-            "Fetched RPI order book for {} with {} bids and {} asks",
-            instrument_id,
-            snapshot.bids.len(),
-            snapshot.asks.len(),
-        );
-
-        Ok(book)
-    }
-
     /// Requests an order book snapshot as `OrderBookDeltas` for the `instrument_id`.
     ///
     /// # Errors
@@ -2937,8 +2737,8 @@ impl OKXHttpClient {
     pub async fn request_funding_rates(
         &self,
         instrument_id: InstrumentId,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<FundingRateUpdate>> {
         let mut params = GetFundingRateHistoryParams {
@@ -2948,11 +2748,11 @@ impl OKXHttpClient {
 
         // OKX uses "before" for newer-than and "after" for older-than
         if let Some(start) = start {
-            params.before = Some(start.as_millisecond().to_string());
+            params.before = Some(start.timestamp_millis().to_string());
         }
 
         if let Some(end) = end {
-            params.after = Some(end.as_millisecond().to_string());
+            params.after = Some(end.timestamp_millis().to_string());
         }
 
         params.limit = limit;
@@ -3002,8 +2802,8 @@ impl OKXHttpClient {
     pub async fn request_trades(
         &self,
         instrument_id: InstrumentId,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<TradeTick>> {
         const OKX_TRADES_MAX_LIMIT: u32 = 100;
@@ -3023,7 +2823,7 @@ impl OKXHttpClient {
             anyhow::ensure!(s < e, "Invalid time range: start={s:?} end={e:?}");
         }
 
-        let now = Timestamp::now();
+        let now = Utc::now();
 
         if let Some(s) = start
             && s > now
@@ -3046,8 +2846,8 @@ impl OKXHttpClient {
             (Some(_), Some(_)) => Mode::Range,
         };
 
-        let start_ms = start.map(|s| s.as_millisecond());
-        let end_ms = end.map(|e| e.as_millisecond());
+        let start_ms = start.map(|s| s.timestamp_millis());
+        let end_ms = end.map(|e| e.timestamp_millis());
 
         let ts_init = self.generate_ts_init();
         let inst = self.instrument_from_cache_by_id(instrument_id)?;
@@ -3337,7 +3137,7 @@ impl OKXHttpClient {
     /// - History endpoint (`/api/v5/market/history-candles`): ≤ 100 rows/call, ≤ 20 req/2s
     ///   - Used when: start is Some AND age > 100 days
     ///
-    /// Age is calculated as `Timestamp::now() - start` at the time of the first request.
+    /// Age is calculated as `Utc::now() - start` at the time of the first request.
     ///
     /// # Supported Aggregations
     ///
@@ -3363,8 +3163,8 @@ impl OKXHttpClient {
     pub async fn request_bars(
         &self,
         bar_type: BarType,
-        start: Option<Timestamp>,
-        mut end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        mut end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<Bar>> {
         const HISTORY_SPLIT_DAYS: i64 = 100;
@@ -3388,7 +3188,7 @@ impl OKXHttpClient {
             anyhow::ensure!(s < e, "Invalid time range: start={s:?} end={e:?}");
         }
 
-        let now = Timestamp::now();
+        let now = Utc::now();
 
         if let Some(s) = start
             && s > now
@@ -3432,12 +3232,12 @@ impl OKXHttpClient {
             (Some(_), Some(_)) => Mode::Range,
         };
 
-        let start_ns = start.and_then(|s| i64::try_from(s.as_nanosecond()).ok());
-        let end_ns = end.and_then(|e| i64::try_from(e.as_nanosecond()).ok());
+        let start_ns = start.and_then(|s| s.timestamp_nanos_opt());
+        let end_ns = end.and_then(|e| e.timestamp_nanos_opt());
 
         // Floor start and ceiling end to bar boundaries for cleaner API requests
         let start_ms = start.map(|s| {
-            let ms = s.as_millisecond();
+            let ms = s.timestamp_millis();
 
             if slot_ms > 0 {
                 (ms / slot_ms) * slot_ms // Floor to nearest bar boundary
@@ -3446,7 +3246,7 @@ impl OKXHttpClient {
             }
         });
         let end_ms = end.map(|e| {
-            let ms = e.as_millisecond();
+            let ms = e.timestamp_millis();
 
             if slot_ms > 0 {
                 ((ms + slot_ms - 1) / slot_ms) * slot_ms // Ceiling to nearest bar boundary
@@ -3454,7 +3254,7 @@ impl OKXHttpClient {
                 ms
             }
         });
-        let now_ms = now.as_millisecond();
+        let now_ms = now.timestamp_millis();
 
         let instrument_id = bar_type.instrument_id();
         let symbol = instrument_id.symbol;
@@ -3976,8 +3776,8 @@ impl OKXHttpClient {
         account_id: AccountId,
         instrument_type: Option<OKXInstrumentType>,
         instrument_id: Option<InstrumentId>,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         open_only: bool,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
@@ -4119,8 +3919,8 @@ impl OKXHttpClient {
         &self,
         account_id: AccountId,
         instrument_id: Option<InstrumentId>,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         open_only: bool,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
@@ -4134,11 +3934,11 @@ impl OKXHttpClient {
         }
 
         if let Some(start) = start {
-            history_builder.begin(start.as_millisecond().to_string());
+            history_builder.begin(start.timestamp_millis().to_string());
         }
 
         if let Some(end) = end {
-            history_builder.end(end.as_millisecond().to_string());
+            history_builder.end(end.timestamp_millis().to_string());
         }
 
         if let Some(limit) = spread_page_limit(limit) {
@@ -4598,8 +4398,8 @@ impl OKXHttpClient {
         account_id: AccountId,
         instrument_type: Option<OKXInstrumentType>,
         instrument_id: Option<InstrumentId>,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<FillReport>> {
         if instrument_id
@@ -4709,8 +4509,8 @@ impl OKXHttpClient {
         &self,
         account_id: AccountId,
         instrument_id: Option<InstrumentId>,
-        start: Option<Timestamp>,
-        end: Option<Timestamp>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<FillReport>> {
         let mut builder = GetSpreadTradesParamsBuilder::default();
@@ -4720,11 +4520,11 @@ impl OKXHttpClient {
         }
 
         if let Some(start) = start {
-            builder.begin(start.as_millisecond().to_string());
+            builder.begin(start.timestamp_millis().to_string());
         }
 
         if let Some(end) = end {
-            builder.end(end.as_millisecond().to_string());
+            builder.end(end.timestamp_millis().to_string());
         }
 
         if let Some(limit) = spread_page_limit(limit) {
@@ -5051,85 +4851,6 @@ impl OKXHttpClient {
         resp.into_iter()
             .next()
             .ok_or_else(|| OKXHttpError::ValidationError("Empty response".to_string()))
-    }
-
-    /// Places multiple regular orders via HTTP.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the request fails.
-    pub async fn place_orders(
-        &self,
-        requests: Vec<OKXPlaceOrderRequest>,
-    ) -> Result<Vec<OKXPlaceOrderResponse>, OKXHttpError> {
-        if requests.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let body =
-            serde_json::to_vec(&requests).map_err(|e| OKXHttpError::JsonError(e.to_string()))?;
-        self.inner
-            .send_request::<_, ()>(
-                Method::POST,
-                "/api/v5/trade/batch-orders",
-                None,
-                Some(body),
-                true,
-            )
-            .await
-    }
-
-    /// Amends a regular order via HTTP.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the request fails.
-    pub async fn amend_order(
-        &self,
-        request: OKXAmendOrderRequest,
-    ) -> Result<OKXPlaceOrderResponse, OKXHttpError> {
-        let body =
-            serde_json::to_vec(&request).map_err(|e| OKXHttpError::JsonError(e.to_string()))?;
-        let resp: Vec<OKXPlaceOrderResponse> = self
-            .inner
-            .send_request::<_, ()>(
-                Method::POST,
-                "/api/v5/trade/amend-order",
-                None,
-                Some(body),
-                true,
-            )
-            .await?;
-
-        resp.into_iter()
-            .next()
-            .ok_or_else(|| OKXHttpError::ValidationError("Empty response".to_string()))
-    }
-
-    /// Amends multiple regular orders via HTTP.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the request fails.
-    pub async fn amend_orders(
-        &self,
-        requests: Vec<OKXAmendOrderRequest>,
-    ) -> Result<Vec<OKXPlaceOrderResponse>, OKXHttpError> {
-        if requests.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let body =
-            serde_json::to_vec(&requests).map_err(|e| OKXHttpError::JsonError(e.to_string()))?;
-        self.inner
-            .send_request::<_, ()>(
-                Method::POST,
-                "/api/v5/trade/amend-batch-orders",
-                None,
-                Some(body),
-                true,
-            )
-            .await
     }
 
     /// Places a spread order via HTTP.
@@ -5656,12 +5377,7 @@ impl OKXHttpClient {
         speed_bump: Option<String>,
         outcome: Option<String>,
         slippage_pct: Option<String>,
-        rpi: Option<bool>,
-        rpi_taker_access: Option<bool>,
-        rpi_px_round: Option<bool>,
     ) -> Result<OKXPlaceOrderResponse, OKXHttpError> {
-        let rpi = rpi.unwrap_or(false);
-
         if is_okx_spread_symbol(instrument_id.symbol.as_str()) {
             if reduce_only.unwrap_or(false)
                 || quote_quantity.unwrap_or(false)
@@ -5673,9 +5389,6 @@ impl OKXHttpClient {
                 || speed_bump.is_some()
                 || outcome.is_some()
                 || slippage_pct.is_some()
-                || rpi
-                || rpi_taker_access.is_some()
-                || rpi_px_round.is_some()
             {
                 return Err(OKXHttpError::ValidationError(
                     "OKX spread orders do not support regular order extensions".to_string(),
@@ -5770,15 +5483,7 @@ impl OKXHttpClient {
             None
         };
 
-        if rpi && order_type != OrderType::Limit {
-            return Err(OKXHttpError::ValidationError(
-                "OKX RPI orders require a limit order".to_string(),
-            ));
-        }
-
-        let (ord_type, px) = if rpi {
-            (OKXOrderType::Rpi, price)
-        } else if post_only.unwrap_or(false) {
+        let (ord_type, px) = if post_only.unwrap_or(false) {
             (OKXOrderType::PostOnly, price)
         } else if let Some(tif) = time_in_force {
             match (order_type, tif) {
@@ -5864,8 +5569,6 @@ impl OKXHttpClient {
             speed_bump,
             outcome,
             slippage_pct,
-            rpi_taker_access,
-            rpi_px_round,
         };
 
         self.place_order(request).await
@@ -6155,7 +5858,7 @@ impl OKXHttpClient {
         instrument_id: Option<InstrumentId>,
         algo_id: Option<String>,
         algo_client_order_id: Option<ClientOrderId>,
-        state: Option<OKXAlgoOrderStatus>,
+        state: Option<OKXOrderStatus>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
         let mut instruments_cache: AHashMap<Ustr, InstrumentAny> = AHashMap::new();
@@ -6176,62 +5879,6 @@ impl OKXHttpClient {
         let mut reports = Vec::new();
         let mut seen: AHashSet<(String, String)> = AHashSet::new();
 
-        if has_specific_lookup {
-            let mut params_builder = GetAlgoOrderParamsBuilder::default();
-
-            if let Some(algo_id) = algo_id {
-                params_builder.algo_id(algo_id);
-            }
-
-            if let Some(client_order_id) = algo_client_order_id {
-                params_builder.algo_cl_ord_id(client_order_id.as_str().to_string());
-            }
-
-            let params = params_builder
-                .build()
-                .map_err(|e| anyhow::anyhow!(format!("Failed to build algo order params: {e}")))?;
-            let mut orders = self.inner.get_algo_order(params).await?;
-
-            if let Some(state) = state {
-                orders.retain(|order| order.state == state);
-            }
-
-            self.collect_algo_reports(
-                account_id,
-                &orders,
-                &mut instruments_cache,
-                ts_init,
-                &mut seen,
-                &mut reports,
-            )
-            .await?;
-
-            if let Some(limit) = limit {
-                reports.truncate(limit as usize);
-            }
-
-            return Ok(reports);
-        }
-
-        let query_pending = state.is_none()
-            || matches!(
-                state,
-                Some(OKXAlgoOrderStatus::Live | OKXAlgoOrderStatus::Pause)
-            );
-        let history_state = match state {
-            None | Some(OKXAlgoOrderStatus::Live | OKXAlgoOrderStatus::Pause) => None,
-            Some(
-                OKXAlgoOrderStatus::Effective
-                | OKXAlgoOrderStatus::OrderPlaced
-                | OKXAlgoOrderStatus::PartiallyEffective
-                | OKXAlgoOrderStatus::Filled,
-            ) => Some(OKXAlgoOrderStatus::Effective),
-            Some(OKXAlgoOrderStatus::Canceled) => Some(OKXAlgoOrderStatus::Canceled),
-            Some(OKXAlgoOrderStatus::OrderFailed | OKXAlgoOrderStatus::PartiallyFailed) => {
-                Some(OKXAlgoOrderStatus::OrderFailed)
-            }
-        };
-
         for ord_type in [
             OKXAlgoOrderType::Oco,
             OKXAlgoOrderType::Conditional,
@@ -6246,45 +5893,50 @@ impl OKXHttpClient {
                 params_builder.inst_id(inst_id.symbol.inner().to_string());
             }
 
-            let mut params = params_builder
+            if let Some(algo_id) = algo_id.as_ref() {
+                params_builder.algo_id(algo_id.clone());
+            }
+
+            if let Some(client_order_id) = algo_client_order_id.as_ref() {
+                params_builder.algo_cl_ord_id(client_order_id.as_str().to_string());
+            }
+
+            if let Some(state) = state {
+                params_builder.state(state);
+            }
+
+            let params = params_builder
                 .build()
                 .map_err(|e| anyhow::anyhow!(format!("Failed to build algo order params: {e}")))?;
 
-            if query_pending {
-                let remaining = limit.map(|l| (l as usize).saturating_sub(reports.len()));
-                let mut pending = self.paginate_algo_pending(&params, remaining).await?;
+            let remaining = limit.map(|l| (l as usize).saturating_sub(reports.len()));
+            let pending = self.paginate_algo_pending(&params, remaining).await?;
+            self.collect_algo_reports(
+                account_id,
+                &pending,
+                &mut instruments_cache,
+                ts_init,
+                &mut seen,
+                &mut reports,
+            )
+            .await?;
 
-                if let Some(state) = state {
-                    pending.retain(|order| order.state == state);
-                }
-
-                self.collect_algo_reports(
-                    account_id,
-                    &pending,
-                    &mut instruments_cache,
-                    ts_init,
-                    &mut seen,
-                    &mut reports,
-                )
-                .await?;
-
-                if let Some(lim) = limit
-                    && reports.len() >= lim as usize
-                {
-                    reports.truncate(lim as usize);
-                    return Ok(reports);
-                }
+            if has_specific_lookup && !reports.is_empty() {
+                return Ok(reports);
             }
 
-            if let Some(history_state) = history_state {
-                params.state = Some(history_state);
+            if let Some(lim) = limit
+                && reports.len() >= lim as usize
+            {
+                reports.truncate(lim as usize);
+                return Ok(reports);
+            }
+
+            // `/orders-algo-history` rejects anything but `state`/`algoId`
+            // with 50015; `algoClOrdId` alone is not accepted.
+            if state.is_some() || algo_id.is_some() {
                 let remaining = limit.map(|l| (l as usize).saturating_sub(reports.len()));
-                let mut history = self.paginate_algo_history(&params, remaining).await?;
-
-                if let Some(state) = state {
-                    history.retain(|order| order.state == state);
-                }
-
+                let history = self.paginate_algo_history(&params, remaining).await?;
                 self.collect_algo_reports(
                     account_id,
                     &history,
@@ -6294,6 +5946,10 @@ impl OKXHttpClient {
                     &mut reports,
                 )
                 .await?;
+
+                if has_specific_lookup && !reports.is_empty() {
+                    return Ok(reports);
+                }
 
                 if let Some(lim) = limit
                     && reports.len() >= lim as usize

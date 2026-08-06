@@ -340,9 +340,9 @@ impl GreeksCalculator {
     /// Calculates option or underlying greeks for a given instrument and a quantity of 1.
     ///
     /// Additional features:
-    /// - Apply shocks to the spot value of the instrument's underlying, implied volatility, or time to expiry.
+    /// - Apply shocks to the spot value of the instrument's underlying, implied volatility or time to expiry.
     /// - Compute percent greeks.
-    /// - Compute beta-weighted delta, gamma, and vega with respect to an index.
+    /// - Compute beta-weighted delta, gamma and vega with respect to an index.
     ///
     /// # Errors
     ///
@@ -543,11 +543,11 @@ impl GreeksCalculator {
             .map(|ns| ns.to_datetime_utc())
             .unwrap_or_default();
         let expiry_int = expiry_utc
-            .strftime("%Y%m%d")
+            .format("%Y%m%d")
             .to_string()
             .parse::<i32>()
             .unwrap_or(0);
-        let raw_days = utc_now.duration_until(expiry_utc).as_hours() / 24;
+        let raw_days = (expiry_utc - utc_now).num_days();
         let expiry_in_days = raw_days.max(1) as i32;
         let expiry_in_years = expiry_in_days as f64 / 365.25;
         let currency = instrument.quote_currency().code.to_string();
@@ -779,7 +779,7 @@ impl GreeksCalculator {
         anyhow::bail!("No price available for {underlying_instrument_id}")
     }
 
-    /// Modifies delta, gamma, and vega based on beta weighting and percentage calculations.
+    /// Modifies delta, gamma and vega based on beta weighting and percentage calculations.
     ///
     /// The beta weighting of delta and gamma follows this equation linking the returns of a stock x to the ones of an index I:
     /// (x - x0) / x0 = alpha + beta (I - I0) / I0 + epsilon
@@ -924,9 +924,9 @@ impl GreeksCalculator {
     /// Aggregates the Greeks data for all open positions that match the specified criteria.
     ///
     /// Additional features:
-    /// - Apply shocks to the spot value of an instrument's underlying, implied volatility, or time to expiry.
+    /// - Apply shocks to the spot value of an instrument's underlying, implied volatility or time to expiry.
     /// - Compute percent greeks.
-    /// - Compute beta-weighted delta, gamma, and vega with respect to an index.
+    /// - Compute beta-weighted delta, gamma and vega with respect to an index.
     ///
     /// # Errors
     ///
@@ -1170,8 +1170,9 @@ impl GreeksCalculator {
             .expiration_ns()
             .map(|ns| ns.to_datetime_utc())
             .unwrap_or_default();
-        let now = self.clock.borrow().timestamp_ns().to_datetime_utc();
-        let expiry_in_days = (now.duration_until(expiry_utc).as_hours() / 24).max(1) as i32;
+        let expiry_in_days = (expiry_utc - self.clock.borrow().timestamp_ns().to_datetime_utc())
+            .num_days()
+            .max(1) as i32;
         let expiry_in_years = expiry_in_days as f64 / 365.25;
         let currency = call_instrument.quote_currency().code.to_string();
         let interest_rate = self
@@ -1256,7 +1257,7 @@ impl GreeksCalculator {
 mod tests {
     use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-    use jiff::{Timestamp, civil::Date, tz::Offset};
+    use chrono::{TimeZone, Utc};
     use nautilus_model::{
         data::{IndexPriceUpdate, QuoteTick},
         enums::{AssetClass, OptionKind, PositionSide},
@@ -1269,16 +1270,6 @@ mod tests {
 
     use super::*;
     use crate::{cache::Cache, clock::TestClock};
-
-    fn utc_timestamp(year: i16, month: i8, day: i8, hour: i8, minute: i8, second: i8) -> Timestamp {
-        Offset::UTC
-            .to_timestamp(
-                Date::new(year, month, day)
-                    .unwrap()
-                    .at(hour, minute, second, 0),
-            )
-            .unwrap()
-    }
 
     fn create_test_calculator() -> GreeksCalculator {
         let cache = Rc::new(RefCell::new(Cache::new(None, None)));
@@ -1746,7 +1737,7 @@ mod tests {
     }
 
     fn option_with_expiration(instrument_id: &str, expiration_ns: UnixNanos) -> OptionContract {
-        let activation_ns = UnixNanos::from(utc_timestamp(2021, 9, 17, 0, 0, 0));
+        let activation_ns = UnixNanos::from(Utc.with_ymd_and_hms(2021, 9, 17, 0, 0, 0).unwrap());
         OptionContract::new(
             InstrumentId::from(instrument_id),
             Symbol::from("AAPL211217C00150000"),
@@ -1927,8 +1918,8 @@ mod tests {
 
     #[rstest]
     fn test_expiry_in_days_multi_day_unchanged() {
-        let now = utc_timestamp(2025, 3, 8, 12, 0, 0);
-        let expiry = now + jiff::SignedDuration::from_hours(24 * (30));
+        let now = Utc.with_ymd_and_hms(2025, 3, 8, 12, 0, 0).unwrap();
+        let expiry = now + chrono::Duration::days(30);
         let now_ns = UnixNanos::from(now);
         let expiry_ns = UnixNanos::from(expiry);
         let option = option_with_expiration("AAPL250417C00150000.OPRA", expiry_ns);
@@ -1967,8 +1958,8 @@ mod tests {
 
     #[rstest]
     fn test_expiry_in_days_same_day_clamped_to_one() {
-        let now = utc_timestamp(2025, 3, 8, 12, 0, 0);
-        let expiry_same_day = utc_timestamp(2025, 3, 8, 18, 0, 0);
+        let now = Utc.with_ymd_and_hms(2025, 3, 8, 12, 0, 0).unwrap();
+        let expiry_same_day = Utc.with_ymd_and_hms(2025, 3, 8, 18, 0, 0).unwrap();
         let now_ns = UnixNanos::from(now);
         let expiry_ns = UnixNanos::from(expiry_same_day);
         let option = option_with_expiration("AAPL250308C00150000.OPRA", expiry_ns);
@@ -2007,8 +1998,8 @@ mod tests {
 
     #[rstest]
     fn test_instrument_greeks_beta_weights_vega_to_vol_index() {
-        let now = utc_timestamp(2025, 3, 8, 12, 0, 0);
-        let expiry = now + jiff::SignedDuration::from_hours(24 * (30));
+        let now = Utc.with_ymd_and_hms(2025, 3, 8, 12, 0, 0).unwrap();
+        let expiry = now + chrono::Duration::days(30);
         let now_ns = UnixNanos::from(now);
         let expiry_ns = UnixNanos::from(expiry);
         let option = option_with_expiration("AAPL250417C00150000.OPRA", expiry_ns);
@@ -2096,8 +2087,8 @@ mod tests {
 
     #[rstest]
     fn test_instrument_greeks_errors_when_vol_index_price_missing() {
-        let now = utc_timestamp(2025, 3, 8, 12, 0, 0);
-        let expiry = now + jiff::SignedDuration::from_hours(24 * (30));
+        let now = Utc.with_ymd_and_hms(2025, 3, 8, 12, 0, 0).unwrap();
+        let expiry = now + chrono::Duration::days(30);
         let now_ns = UnixNanos::from(now);
         let expiry_ns = UnixNanos::from(expiry);
         let option = option_with_expiration("AAPL250417C00150000.OPRA", expiry_ns);
@@ -2229,8 +2220,8 @@ mod tests {
 
     #[rstest]
     fn test_instrument_greeks_errors_when_future_underlying_price_missing_without_cached_spread() {
-        let now = utc_timestamp(2024, 2, 14, 16, 0, 0);
-        let expiry = utc_timestamp(2024, 3, 15, 16, 0, 0);
+        let now = Utc.with_ymd_and_hms(2024, 2, 14, 16, 0, 0).unwrap();
+        let expiry = Utc.with_ymd_and_hms(2024, 3, 15, 16, 0, 0).unwrap();
         let now_ns = UnixNanos::from(now);
         let expiry_ns = UnixNanos::from(expiry);
 
@@ -2319,8 +2310,8 @@ mod tests {
 
     #[rstest]
     fn test_cache_futures_spread_returns_price_to_reference_future() {
-        let now = utc_timestamp(2024, 2, 14, 16, 0, 0);
-        let expiry = utc_timestamp(2024, 3, 15, 16, 0, 0);
+        let now = Utc.with_ymd_and_hms(2024, 2, 14, 16, 0, 0).unwrap();
+        let expiry = Utc.with_ymd_and_hms(2024, 3, 15, 16, 0, 0).unwrap();
         let now_ns = UnixNanos::from(now);
         let expiry_ns = UnixNanos::from(expiry);
 
@@ -2414,8 +2405,8 @@ mod tests {
 
     #[rstest]
     fn test_instrument_greeks_uses_cached_futures_spread_when_underlying_price_missing() {
-        let now = utc_timestamp(2024, 2, 14, 16, 0, 0);
-        let expiry = utc_timestamp(2024, 3, 15, 16, 0, 0);
+        let now = Utc.with_ymd_and_hms(2024, 2, 14, 16, 0, 0).unwrap();
+        let expiry = Utc.with_ymd_and_hms(2024, 3, 15, 16, 0, 0).unwrap();
         let now_ns = UnixNanos::from(now);
         let expiry_ns = UnixNanos::from(expiry);
 
@@ -2550,8 +2541,8 @@ mod tests {
 
     #[rstest]
     fn test_instrument_greeks_uses_index_price_for_index_underlying() {
-        let now = utc_timestamp(2024, 2, 14, 16, 0, 0);
-        let expiry = utc_timestamp(2024, 3, 15, 16, 0, 0);
+        let now = Utc.with_ymd_and_hms(2024, 2, 14, 16, 0, 0).unwrap();
+        let expiry = Utc.with_ymd_and_hms(2024, 3, 15, 16, 0, 0).unwrap();
         let now_ns = UnixNanos::from(now);
         let expiry_ns = UnixNanos::from(expiry);
 
@@ -2627,8 +2618,8 @@ mod tests {
 
     #[rstest]
     fn test_instrument_greeks_prefers_quote_over_index_price_for_index_future() {
-        let now = utc_timestamp(2024, 2, 14, 16, 0, 0);
-        let expiry = utc_timestamp(2024, 3, 15, 16, 0, 0);
+        let now = Utc.with_ymd_and_hms(2024, 2, 14, 16, 0, 0).unwrap();
+        let expiry = Utc.with_ymd_and_hms(2024, 3, 15, 16, 0, 0).unwrap();
         let now_ns = UnixNanos::from(now);
         let expiry_ns = UnixNanos::from(expiry);
 

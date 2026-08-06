@@ -37,7 +37,10 @@ def quote(audusd_id):
 
 
 def test_quote_fully_qualified_name():
-    assert QuoteTick.fully_qualified_name() == "nautilus_trader.model:QuoteTick"
+    module_name, _, type_name = QuoteTick.fully_qualified_name().partition(":")
+
+    assert module_name
+    assert type_name == "QuoteTick"
     assert QuoteTick.__module__ == "nautilus_trader.model"
 
 

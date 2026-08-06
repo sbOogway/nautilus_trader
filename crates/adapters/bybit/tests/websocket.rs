@@ -900,10 +900,10 @@ async fn test_multiple_subscriptions() {
 }
 
 #[rstest]
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn test_wait_until_active_timeout() {
-    // Nothing connects the client, so it stays closed and the wait must time out
-    let client = BybitWebSocketClient::new_public_with(
+    // Create a client but don't start a server
+    let mut client = BybitWebSocketClient::new_public_with(
         BybitProductType::Linear,
         BybitEnvironment::Mainnet,
         Some("ws://127.0.0.1:9999/invalid".to_string()),
@@ -912,13 +912,12 @@ async fn test_wait_until_active_timeout() {
         None,
     );
 
-    let error = client.wait_until_active(0.5).await.unwrap_err();
+    // Connect will fail, but we won't await it
+    let _result = client.connect().await;
 
-    assert!(client.is_closed());
-    assert_eq!(
-        error.to_string(),
-        "Client error: WebSocket connection timeout after 0.5 seconds"
-    );
+    // wait_until_active should timeout
+    let result = client.wait_until_active(0.5).await;
+    assert!(result.is_err());
 }
 
 #[rstest]

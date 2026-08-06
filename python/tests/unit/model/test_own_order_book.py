@@ -16,7 +16,6 @@
 from decimal import Decimal
 
 import pytest
-from tests.unit.model.factories import make_own_order
 
 from nautilus_trader.model import ClientOrderId
 from nautilus_trader.model import OrderSide
@@ -24,6 +23,7 @@ from nautilus_trader.model import OrderStatus
 from nautilus_trader.model import OwnOrderBook
 from nautilus_trader.model import Price
 from nautilus_trader.model import Quantity
+from tests.unit.model.factories import make_own_order
 
 
 @pytest.fixture

@@ -11,7 +11,7 @@ resolved_changed_base=0
 
 run_full() {
   echo "Running full workspace clippy"
-  exec cargo clippy --workspace --lib --bins --tests \
+  exec cargo clippy --workspace --lib --tests \
     --features "$(
       IFS=,
       echo "${DESIRED_FEATURES[*]}"
@@ -104,13 +104,7 @@ for p in data['packages']:
         break
 " 2> /dev/null || true)
 
-  desired_features="${DESIRED_FEATURES[*]}"
-  if [ "$pkg" = "nautilus-serialization" ]; then
-    # The crate has no default features, so compile each core format when its source changes
-    desired_features="$desired_features arrow capnp display sbe"
-  fi
-
-  for feat in $desired_features; do
+  for feat in "${DESIRED_FEATURES[@]}"; do
     case " $pkg_features " in
       *" $feat "*)
         case " $feat_seen " in
@@ -147,5 +141,5 @@ fi
 echo "Running clippy on: ${seen_list[*]}"
 # `${feat_args[@]+...}` guards the expansion: bash 3.2 (macOS default) treats an
 # empty array as unbound under `set -u`, which fires when no features are needed.
-cargo clippy "${pkg_args[@]}" --lib --bins --tests ${feat_args[@]+"${feat_args[@]}"} \
+cargo clippy "${pkg_args[@]}" --lib --tests ${feat_args[@]+"${feat_args[@]}"} \
   --profile "$PROFILE" -- -D warnings

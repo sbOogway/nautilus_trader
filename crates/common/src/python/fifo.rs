@@ -19,7 +19,10 @@ use pyo3::prelude::*;
 
 use crate::cache::fifo::FifoCache;
 
-#[pyo3::pyclass(name = "FifoCache", module = "nautilus_trader.common")]
+#[pyo3::pyclass(
+    name = "FifoCache",
+    module = "nautilus_trader.core.nautilus_pyo3.common"
+)]
 #[pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.common")]
 #[derive(Debug)]
 pub struct PyFifoCache {

@@ -31,10 +31,7 @@ extension-module = [
   "pyo3/extension-module",
   "python",
 ]
-high-precision = [
-  "nautilus-model/high-precision",
-  "nautilus-serialization/high-precision",
-]
+high-precision = ["nautilus-model/high-precision"]
 python = [
   "dep:nautilus-system",
   "nautilus-core/python",
@@ -70,8 +67,8 @@ async-trait = { workspace = true }
 bon = { workspace = true }
 bytes = { workspace = true }
 bzip2 = { workspace = true }
+chrono = { workspace = true }
 flate2 = { workspace = true }
-jiff = { workspace = true }
 log = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
@@ -93,9 +90,7 @@ nautilus-execution = { workspace = true }
 nautilus-live = { workspace = true, features = ["node"] }
 nautilus-portfolio = { workspace = true }
 nautilus-risk = { workspace = true }
-nautilus-testkit = { workspace = true, default-features = false, features = [
-  "testers",
-] }
+nautilus-testkit = { workspace = true }
 nautilus-trading = { workspace = true }
 
 axum = { workspace = true }

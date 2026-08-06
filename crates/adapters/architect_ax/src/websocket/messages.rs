@@ -33,7 +33,7 @@ use crate::{
         enums::{
             AxCancelReason, AxCancelRejectionReason, AxCandleWidth, AxInstrumentState,
             AxMarketDataLevel, AxMdRequestType, AxOrderRequestType, AxOrderSide, AxOrderStatus,
-            AxOrderWsMessageType, AxTimeInForce,
+            AxOrderWsMessageType, AxTimeInForce, AxTradeSide,
         },
         parse::{
             deserialize_decimal_or_zero, deserialize_optional_decimal_from_str,
@@ -272,7 +272,7 @@ pub struct AxMdTicker {
 pub struct AxMdTrade {
     /// Timestamp (Unix epoch seconds).
     pub ts: i64,
-    /// Nanosecond component of the timestamp.
+    /// Transaction number.
     pub tn: i64,
     /// Instrument symbol.
     pub s: Ustr,
@@ -360,9 +360,6 @@ pub struct AxMdBookL1 {
 
 /// Level 2 order book update (aggregated price levels).
 ///
-/// AX flags every observed frame as a full snapshot (`st: true`), so the parser rebuilds the book
-/// from each message. Incremental frames (`st: false`) are not handled.
-///
 /// # References
 /// - <https://docs.architect.exchange/api-reference/marketdata/md-ws>
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -383,9 +380,6 @@ pub struct AxMdBookL2 {
 }
 
 /// Level 3 order book update (individual order quantities).
-///
-/// AX flags every observed frame as a full snapshot (`st: true`), so the parser rebuilds the book
-/// from each message. Incremental frames (`st: false`) are not handled.
 ///
 /// # References
 /// - <https://docs.architect.exchange/api-reference/marketdata/md-ws>
@@ -646,7 +640,7 @@ pub struct AxWsTradeExecution {
     #[serde(deserialize_with = "deserialize_decimal_or_zero")]
     pub p: Decimal,
     /// Trade direction.
-    pub d: AxOrderSide,
+    pub d: AxTradeSide,
     /// Whether this was an aggressor (taker) order.
     pub agg: bool,
 }
@@ -1268,7 +1262,7 @@ mod tests {
         let json = include_str!("../../test_data/ws_order_filled.json");
         let msg: AxWsOrderFilled = serde_json::from_str(json).unwrap();
         assert_eq!(msg.o.o, AxOrderStatus::Filled);
-        assert_eq!(msg.xs.d, AxOrderSide::Buy);
+        assert_eq!(msg.xs.d, AxTradeSide::Buy);
     }
 
     #[rstest]
@@ -1276,7 +1270,6 @@ mod tests {
         let json = include_str!("../../test_data/ws_order_partially_filled.json");
         let msg: AxWsOrderPartiallyFilled = serde_json::from_str(json).unwrap();
         assert_eq!(msg.xs.q, 50);
-        assert_eq!(msg.xs.d, AxOrderSide::Buy);
     }
 
     #[rstest]

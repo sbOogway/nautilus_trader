@@ -31,7 +31,7 @@ use ustr::Ustr;
 use super::{
     order_fill_tracker::OrderFillTrackerMap,
     parse::{
-        build_maker_fill_report, instrument_fee_exponent, instrument_taker_fee, parse_fill_report,
+        build_maker_fill_report, instrument_taker_fee, parse_fill_report,
         parse_order_status_report, parse_timestamp,
     },
 };
@@ -57,16 +57,6 @@ pub(crate) struct FillContext<'a> {
     pub clock: &'static AtomicTime,
 }
 
-/// Counts of confirmed trade evidence dropped while building fill reports.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct FillBuildDiscards {
-    /// Fill entries dropped because their instrument is not loaded.
-    pub unmapped_instruments: usize,
-    /// Confirmed maker trades dropped because no maker order in the match is
-    /// owned by the account.
-    pub unowned_maker_trades: usize,
-}
-
 /// Converts trade reports into fill reports: single implementation of maker/taker
 /// parsing used by both `generate_fill_reports()` and `generate_mass_status()`.
 pub(crate) fn build_fill_reports_from_trades(
@@ -75,9 +65,9 @@ pub(crate) fn build_fill_reports_from_trades(
     instruments: &AtomicMap<Ustr, InstrumentAny>,
     instrument_filter: Option<InstrumentId>,
     ts_init: UnixNanos,
-) -> (Vec<FillReport>, FillBuildDiscards) {
+) -> (Vec<FillReport>, usize) {
     let mut reports = Vec::new();
-    let mut discards = FillBuildDiscards::default();
+    let mut filtered = 0usize;
 
     for trade in trades {
         if trade.status != PolymarketTradeStatus::Confirmed {
@@ -87,21 +77,8 @@ pub(crate) fn build_fill_reports_from_trades(
         let is_maker = trade.trader_side == PolymarketLiquiditySide::Maker;
 
         if is_maker {
-            if !trade
-                .maker_orders
-                .iter()
-                .any(|mo| mo.is_owned_by(ctx.user_address, ctx.api_key))
-            {
-                discards.unowned_maker_trades += 1;
-                log::debug!(
-                    "Confirmed maker trade {} holds no maker order owned by the account",
-                    trade.id,
-                );
-                continue;
-            }
-
             for mo in &trade.maker_orders {
-                if !mo.is_owned_by(ctx.user_address, ctx.api_key) {
+                if mo.maker_address != ctx.user_address && mo.owner != ctx.api_key {
                     continue;
                 }
                 let token_id = Ustr::from(mo.asset_id.as_str());
@@ -109,7 +86,7 @@ pub(crate) fn build_fill_reports_from_trades(
                 let (instrument_id, price_prec, size_prec) = match instrument {
                     Some(i) => (i.id(), i.price_precision(), i.size_precision()),
                     None => {
-                        discards.unmapped_instruments += 1;
+                        filtered += 1;
                         continue;
                     }
                 };
@@ -142,20 +119,18 @@ pub(crate) fn build_fill_reports_from_trades(
         } else {
             let token_id = Ustr::from(trade.asset_id.as_str());
             let instrument = instruments.get_cloned(&token_id);
-            let (instrument_id, price_prec, size_prec, taker_fee_rate, fee_exponent) =
-                match instrument {
-                    Some(i) => (
-                        i.id(),
-                        i.price_precision(),
-                        i.size_precision(),
-                        instrument_taker_fee(&i),
-                        instrument_fee_exponent(&i),
-                    ),
-                    None => {
-                        discards.unmapped_instruments += 1;
-                        continue;
-                    }
-                };
+            let (instrument_id, price_prec, size_prec, taker_fee_rate) = match instrument {
+                Some(i) => (
+                    i.id(),
+                    i.price_precision(),
+                    i.size_precision(),
+                    instrument_taker_fee(&i),
+                ),
+                None => {
+                    filtered += 1;
+                    continue;
+                }
+            };
 
             if let Some(filter_id) = instrument_filter
                 && instrument_id != filter_id
@@ -172,14 +147,13 @@ pub(crate) fn build_fill_reports_from_trades(
                 size_prec,
                 ctx.pusd,
                 taker_fee_rate,
-                fee_exponent,
                 ts_init,
             );
             reports.push(report);
         }
     }
 
-    (reports, discards)
+    (reports, filtered)
 }
 
 /// Converts open orders into order status reports.
@@ -324,16 +298,8 @@ pub(crate) async fn generate_mass_status(
         .await
         .context("failed to fetch trades for mass status")?;
 
-    let (mut fill_reports, fill_discards) =
+    let (mut fill_reports, fills_filtered) =
         build_fill_reports_from_trades(&trades, ctx, instruments, None, ts_init);
-
-    if fill_discards.unowned_maker_trades > 0 {
-        log::error!(
-            "Mass status is missing {} confirmed maker trade(s) holding no maker order owned by \
-             the account; executed quantity may be understated",
-            fill_discards.unowned_maker_trades,
-        );
-    }
 
     // Snap dust drift on REST fills the same way the WS path does.
     // Commission stays as venue-reported.
@@ -373,13 +339,11 @@ pub(crate) async fn generate_mass_status(
         );
     } else {
         log::debug!(
-            "Generated mass status: {} orders ({} filtered), {} fills ({} instrument-filtered, \
-             {} unowned maker trades), {} positions",
+            "Generated mass status: {} orders ({} filtered), {} fills ({} filtered), {} positions",
             order_reports.len(),
             orders_filtered,
             fill_reports.len(),
-            fill_discards.unmapped_instruments,
-            fill_discards.unowned_maker_trades,
+            fills_filtered,
             position_reports.len(),
         );
     }

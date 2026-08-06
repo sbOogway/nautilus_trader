@@ -574,6 +574,8 @@ async fn test_data_client_request_instruments() {
     let mut client = CoinbaseDataClient::new(*COINBASE_CLIENT_ID, config).unwrap();
     client.connect().await.unwrap();
 
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
     while rx.try_recv().is_ok() {}
 
     let request = RequestInstruments::new(
@@ -611,6 +613,8 @@ async fn test_data_client_request_instrument() {
     let config = create_data_client_config(addr);
     let mut client = CoinbaseDataClient::new(*COINBASE_CLIENT_ID, config).unwrap();
     client.connect().await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     while rx.try_recv().is_ok() {}
 
@@ -650,6 +654,8 @@ async fn test_data_client_request_book_snapshot() {
     let config = create_data_client_config(addr);
     let mut client = CoinbaseDataClient::new(*COINBASE_CLIENT_ID, config).unwrap();
     client.connect().await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     while rx.try_recv().is_ok() {}
 
@@ -693,6 +699,8 @@ async fn test_data_client_request_book_snapshot_with_depth() {
     let config = create_data_client_config(addr);
     let mut client = CoinbaseDataClient::new(*COINBASE_CLIENT_ID, config).unwrap();
     client.connect().await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     while rx.try_recv().is_ok() {}
 
@@ -739,6 +747,8 @@ async fn test_data_client_request_bars() {
     let config = create_data_client_config(addr);
     let mut client = CoinbaseDataClient::new(*COINBASE_CLIENT_ID, config).unwrap();
     client.connect().await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     while rx.try_recv().is_ok() {}
 
@@ -789,6 +799,8 @@ async fn test_data_client_request_trades() {
     let config = create_data_client_config(addr);
     let mut client = CoinbaseDataClient::new(*COINBASE_CLIENT_ID, config).unwrap();
     client.connect().await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     while rx.try_recv().is_ok() {}
 

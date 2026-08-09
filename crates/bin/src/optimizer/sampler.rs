@@ -16,18 +16,23 @@
 //! Sampler abstractions around the Rustuna optimization framework.
 
 use std::str::FromStr;
+use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::Result;
 use rustuna_core::{
     sampler::{RandomSampler, Sampler},
-    storage::InMemoryStorage,
-    study::{create_study, Direction},
+    storage::Storage,
+    study::{create_study, Direction, Study},
     trial::Trial,
     Error as RustunaError, ErrorKind,
 };
 use rustuna_sampler::{
     nsgaii::NSGAIISampler,
     tpe::{TpeConfig, TpeSampler},
+};
+use rustuna_storage::{
+    cache::CachedStorage,
+    sqlite3::SQLite3Storage,
 };
 use serde::Serialize;
 
@@ -108,16 +113,38 @@ impl RustunaOptimizer {
         n_trials: usize,
         space: &SearchSpace,
         env: &BacktestEnv,
+        db_path: &str,
         records: &mut Vec<RecordedTrial<T::Params>>,
     ) -> Result<()>
     where
         S: Sampler + Send + 'static,
         T: Optimizable,
     {
-        let storage = InMemoryStorage::new();
+        // Persist every study and trial to SQLite (Optuna-compatible schema). A study with the
+        // given name is resumed when it already exists, appending new trials to the history.
+        let backend = SQLite3Storage::new(db_path)
+            .map_err(|e| anyhow::anyhow!("rustuna: failed to open study database `{db_path}`: {e}"))?;
+        backend
+            .create_database()
+            .map_err(|e| anyhow::anyhow!("rustuna: failed to initialize study database: {e}"))?;
+
+        let mut cached = CachedStorage::new(Box::new(backend));
+        let resume = cached
+            .get_studies()
+            .map_err(|e| anyhow::anyhow!("rustuna: failed to query studies: {e}"))?
+            .iter()
+            .any(|s| s.name == study_name);
+
         let directions = vec![Direction::Minimize, Direction::Minimize];
-        let study = create_study(study_name, storage, sampler, directions)
-            .map_err(|e| anyhow::anyhow!("rustuna: failed to create study: {e}"))?;
+        let study = if resume {
+            let storage: Arc<RwLock<dyn Storage>> = Arc::new(RwLock::new(cached));
+            let sampler: Arc<Mutex<dyn Sampler>> = Arc::new(Mutex::new(sampler));
+            Study::from_name(study_name.to_string(), storage, sampler)
+                .map_err(|e| anyhow::anyhow!("rustuna: failed to load study `{study_name}`: {e}"))?
+        } else {
+            create_study(study_name, cached, sampler, directions)
+                .map_err(|e| anyhow::anyhow!("rustuna: failed to create study: {e}"))?
+        };
 
         study
             .optimize(
@@ -173,6 +200,8 @@ impl RustunaOptimizer {
     }
 
     /// Runs `n_trials` backtests over `space`, returning per-trial records.
+    ///
+    /// Studies and trials are persisted to the SQLite database at `db_path`.
     pub fn optimize<T: Optimizable>(
         &self,
         adapter: &T,
@@ -180,6 +209,7 @@ impl RustunaOptimizer {
         n_trials: usize,
         space: &SearchSpace,
         env: &BacktestEnv,
+        db_path: &str,
     ) -> Result<Vec<RecordedTrial<T::Params>>> {
         let mut records = Vec::new();
 
@@ -195,6 +225,7 @@ impl RustunaOptimizer {
                 n_trials,
                 space,
                 env,
+                db_path,
                 &mut records,
             )?,
             (SamplerKind::Tpe, None) => self.run_study(
@@ -204,6 +235,7 @@ impl RustunaOptimizer {
                 n_trials,
                 space,
                 env,
+                db_path,
                 &mut records,
             )?,
             (SamplerKind::Random, Some(seed)) => self.run_study(
@@ -213,6 +245,7 @@ impl RustunaOptimizer {
                 n_trials,
                 space,
                 env,
+                db_path,
                 &mut records,
             )?,
             (SamplerKind::Random, None) => self.run_study(
@@ -222,6 +255,7 @@ impl RustunaOptimizer {
                 n_trials,
                 space,
                 env,
+                db_path,
                 &mut records,
             )?,
             (SamplerKind::NsgaIi, Some(seed)) => self.run_study(
@@ -231,6 +265,7 @@ impl RustunaOptimizer {
                 n_trials,
                 space,
                 env,
+                db_path,
                 &mut records,
             )?,
             (SamplerKind::NsgaIi, None) => self.run_study(
@@ -240,6 +275,7 @@ impl RustunaOptimizer {
                 n_trials,
                 space,
                 env,
+                db_path,
                 &mut records,
             )?,
         }

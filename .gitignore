@@ -19,6 +19,11 @@ logs/
 *.prof
 *.rdb
 *.sqlite
+*.sqlite3
+study.json
+study-*.json
+best.toml
+best-*.toml
 
 # Secrets and environment files
 *.key

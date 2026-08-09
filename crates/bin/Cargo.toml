@@ -26,6 +26,7 @@ nautilus-portfolio = { workspace = true }
 rustls = { workspace = true }
 rustuna-core = { git = "https://github.com/optuna/rustuna", rev = "0b97920b8992", package = "rustuna_core" }
 rustuna-sampler = { git = "https://github.com/optuna/rustuna", rev = "0b97920b8992", package = "rustuna_sampler" }
+rustuna-storage = { git = "https://github.com/optuna/rustuna", rev = "0b97920b8992", package = "rustuna_storage" }
 
 ahash = { workspace = true }
 bon = { workspace = true }

@@ -38,15 +38,17 @@ pub struct GridParams {
     pub skew_factor: f64,
     pub max_position: f64,
     pub trade_size: f64,
+    /// GTD expiry in seconds; `0` disables expiry (GTC).
+    pub expire_time_secs: i64,
 }
 
 impl GridParams {
     pub fn to_config(
         &self,
         instrument_id: InstrumentId,
-        expire_time_secs: Option<u64>,
         on_cancel_resubmit: bool,
     ) -> GridMarketMakerConfig {
+        let expire_time_secs = (self.expire_time_secs > 0).then_some(self.expire_time_secs as u64);
         GridMarketMakerConfig::builder()
             .instrument_id(instrument_id)
             .max_position(Quantity::from(&format!("{:.4}", self.max_position)))
@@ -67,16 +69,12 @@ impl GridParams {
 /// `[grid_mm]` config section.
 #[derive(Debug, Clone)]
 pub struct GridMmOptimizable {
-    pub expire_time_secs: Option<u64>,
     pub on_cancel_resubmit: bool,
 }
 
 impl GridMmOptimizable {
-    pub fn new(expire_time_secs: Option<u64>, on_cancel_resubmit: bool) -> Self {
-        Self {
-            expire_time_secs,
-            on_cancel_resubmit,
-        }
+    pub fn new(on_cancel_resubmit: bool) -> Self {
+        Self { on_cancel_resubmit }
     }
 }
 
@@ -95,6 +93,7 @@ impl Optimizable for GridMmOptimizable {
             "skew_factor",
             "max_position",
             "trade_size",
+            "expire_time_secs",
         ]
     }
 
@@ -106,6 +105,7 @@ impl Optimizable for GridMmOptimizable {
             skew_factor: suggest_float(trial, space, "skew_factor")?,
             max_position: suggest_float(trial, space, "max_position")?,
             trade_size: suggest_float(trial, space, "trade_size")?,
+            expire_time_secs: suggest_int(trial, space, "expire_time_secs")?,
         })
     }
 
@@ -113,26 +113,31 @@ impl Optimizable for GridMmOptimizable {
         if params.max_position < params.trade_size {
             bail!("max_position below trade_size");
         }
-        let config =
-            params.to_config(env.instrument_id, self.expire_time_secs, self.on_cancel_resubmit);
+        let config = params.to_config(env.instrument_id, self.on_cancel_resubmit);
         run_backtest(env, GridMarketMaker::new(config))
     }
 
     fn describe(&self, params: &Self::Params) -> String {
         format!(
-            "levels={} step={}bps requote={}bps skew={:.2} maxpos={:.4} size={:.4}",
+            "levels={} step={}bps requote={}bps skew={:.2} maxpos={:.4} size={:.4} expire={}s",
             params.num_levels,
             params.grid_step_bps,
             params.requote_threshold_bps,
             params.skew_factor,
             params.max_position,
             params.trade_size,
+            params.expire_time_secs,
         )
     }
 
     fn to_fragment(&self, params: &Self::Params, section: &str) -> String {
+        let expire_line = if params.expire_time_secs > 0 {
+            format!("expire_time_secs = {}\n", params.expire_time_secs)
+        } else {
+            String::new()
+        };
         format!(
-            "# best params from optimization\n[{section}]\nnum_levels = {}\ngrid_step_bps = {}\nrequote_threshold_bps = {}\nskew_factor = {}\nmax_position = \"{:.4}\"\ntrade_size = \"{:.4}\"\n",
+            "# best params from optimization\n[{section}]\nnum_levels = {}\ngrid_step_bps = {}\nrequote_threshold_bps = {}\nskew_factor = {}\nmax_position = \"{:.4}\"\ntrade_size = \"{:.4}\"\n{expire_line}",
             params.num_levels,
             params.grid_step_bps,
             params.requote_threshold_bps,

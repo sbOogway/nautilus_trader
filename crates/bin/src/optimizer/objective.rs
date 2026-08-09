@@ -164,6 +164,7 @@ where
         .venues(vec![venue])
         .data(vec![order_book, trades])
         .chunk_size(1_000_000)
+        .dispose_on_completion(false)
         .engine(engine)
         .build()?;
 
@@ -177,7 +178,10 @@ where
             .add_strategy(strategy)
             .context("failed to add strategy")?;
     }
-    node.run().context("backtest run failed")?;
+    let results = node.run().context("backtest run failed")?;
+    let result = results
+        .first()
+        .context("backtest run returned no results")?;
 
     let engine = node.get_engine_mut("grid-mm-optimize").unwrap();
 
@@ -186,8 +190,6 @@ where
         .iter()
         .filter_map(|s| s.total_equity.first().map(|m| m.as_f64()))
         .collect();
-
-    let result = engine.get_result();
 
     let total_orders = result.total_orders;
     let total_positions = result.total_positions;

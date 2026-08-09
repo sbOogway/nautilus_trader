@@ -44,6 +44,9 @@ pub struct GridMarketMakerTomlConfig {
     pub on_cancel_resubmit: bool,
     #[serde(default = "default_recorder_path")]
     pub path: String,
+    /// Optimization settings for this strategy (`[grid_mm.optimize]`).
+    #[serde(default)]
+    pub optimize: Option<OptimizeTomlConfig>,
     #[serde(deserialize_with = "deserialize_environment")]
     pub execution_environment: Environment,
 }
@@ -74,7 +77,11 @@ pub struct MattiasMarketMakerTomlConfig {
     pub Δ_0: Decimal,
     pub Δ_μ: Decimal,
     pub β: Decimal,
-    
+
+    /// Optimization settings for this strategy (`[mmm.optimize]`).
+    #[serde(default)]
+    pub optimize: Option<OptimizeTomlConfig>,
+
     /// execution environment. possible values are live and backtest
     #[serde(deserialize_with = "deserialize_environment")]
     pub execution_environment: Environment
@@ -87,7 +94,6 @@ pub struct Config {
     pub grid_mm: Option<GridMarketMakerTomlConfig>,
     pub recorder: Option<RecorderTomlConfig>,
     pub mmm: Option<MattiasMarketMakerTomlConfig>,
-    pub optimize: Option<OptimizeTomlConfig>,
 }
 
 impl Config {
@@ -111,8 +117,6 @@ where D: Deserializer<'de> {
 
 #[derive(Debug, Deserialize)]
 pub struct OptimizeTomlConfig {
-    /// Strategy adapter to optimize: `grid_mm` or `mmm`.
-    pub strategy: String,
     /// Number of backtest trials to run.
     #[serde(default = "default_trials")]
     pub trials: usize,
@@ -126,6 +130,9 @@ pub struct OptimizeTomlConfig {
     pub weight_obj0: f64,
     /// Study name (recorded in the output JSON).
     pub study_name: Option<String>,
+    /// SQLite database file for persisting studies and trials.
+    #[serde(default = "default_db_path")]
+    pub db_path: String,
     /// Train window start (YYYY-MM-DD, UTC).
     pub train_start: Option<String>,
     /// Train window end (YYYY-MM-DD, UTC).
@@ -184,6 +191,10 @@ fn default_json_out() -> String {
     "study.json".into()
 }
 
+fn default_db_path() -> String {
+    "optimizer.sqlite3".into()
+}
+
 fn default_snapshot_interval_ms() -> u64 {
     crate::optimizer::objective::DEFAULT_SNAPSHOT_INTERVAL_MS
 }
@@ -216,10 +227,23 @@ mod tests {
     fn optimize_section_deserializes() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml");
         let cfg = Config::load(path.to_string()).expect("config.toml should parse");
-        let opt = cfg.optimize.expect("[optimize] section present");
-        assert_eq!(opt.strategy, "grid_mm");
-        assert_eq!(opt.params.len(), 6);
-        let space = opt.search_space().expect("search space valid");
+
+        let grid_opt = cfg
+            .grid_mm
+            .as_ref()
+            .and_then(|g| g.optimize.as_ref())
+            .expect("[grid_mm.optimize] section present");
+        assert_eq!(grid_opt.params.len(), 7);
+        let space = grid_opt.search_space().expect("search space valid");
+        assert_eq!(space.params.len(), 7);
+
+        let mmm_opt = cfg
+            .mmm
+            .as_ref()
+            .and_then(|m| m.optimize.as_ref())
+            .expect("[mmm.optimize] section present");
+        assert_eq!(mmm_opt.params.len(), 6);
+        let space = mmm_opt.search_space().expect("search space valid");
         assert_eq!(space.params.len(), 6);
     }
 }

@@ -7088,10 +7088,13 @@ dependencies = [
  "nautilus-live",
  "nautilus-model",
  "nautilus-persistence",
+ "nautilus-portfolio",
  "nautilus-trading",
  "rand 0.10.2",
  "rust_decimal",
  "rustls",
+ "rustuna_core",
+ "rustuna_sampler",
  "serde",
  "serde_json",
  "tokio",
@@ -8191,6 +8194,16 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "rand_distr"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32cb0b9bc82b0a0876c2dd994a7e7a2683d3e7390ca40e6886785ef0c7e3ee31"
+dependencies = [
+ "num-traits",
+ "rand 0.8.7",
+]
+
+[[package]]
+name = "rand_distr"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a8615d50dcf34fa31f7ab52692afec947c4dd0ab803cc87cb3b0b4570ff7463"
@@ -8865,6 +8878,24 @@ checksum = "04fcea49a4630a3a5d940f4d514dc4f575ed63c14c3e3ed07146634aed7f67a6"
 dependencies = [
  "memchr",
  "once_cell",
+]
+
+[[package]]
+name = "rustuna_core"
+version = "0.1.0"
+source = "git+https://github.com/optuna/rustuna?rev=0b97920b8992#0b97920b899234941e45ebd3f216072a26eecd10"
+dependencies = [
+ "rand 0.8.7",
+ "rand_distr 0.4.3",
+]
+
+[[package]]
+name = "rustuna_sampler"
+version = "0.1.0"
+source = "git+https://github.com/optuna/rustuna?rev=0b97920b8992#0b97920b899234941e45ebd3f216072a26eecd10"
+dependencies = [
+ "rand 0.8.7",
+ "rustuna_core",
 ]
 
 [[package]]
@@ -10506,7 +10537,7 @@ dependencies = [
  "bytes",
  "indexmap 2.14.0",
  "rand 0.9.5",
- "rand_distr",
+ "rand_distr 0.5.1",
  "scoped-tls",
  "tokio",
  "tracing",

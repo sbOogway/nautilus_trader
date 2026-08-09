@@ -7,7 +7,9 @@ Live trading binaries for the Nautilus Trader ecosystem. Configuration is manage
 | Binary | Description |
 |--------|-------------|
 | `grid_mm` | Grid market-making strategy for perpetual futures |
+| `mmm` | Mattia's market maker |
 | `recorder` | Market data recorder that writes live data to disk |
+| `optimizer` | Parameter optimization for strategy configurations (config-driven) |
 
 ## Usage
 

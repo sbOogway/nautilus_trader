@@ -18,8 +18,11 @@ use nautilus_common::enums::Environment;
 use nautilus_model::types::Quantity;
 use rust_decimal::Decimal;
 use serde::{de, Deserialize, Deserializer};
+use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
+
+use crate::optimizer::ParamKind;
 
 #[derive(Debug, Deserialize)]
 pub struct GridMarketMakerTomlConfig {
@@ -83,7 +86,8 @@ pub struct Config {
     #[serde(rename = "grid_mm")]
     pub grid_mm: Option<GridMarketMakerTomlConfig>,
     pub recorder: Option<RecorderTomlConfig>,
-    pub mmm: Option<MattiasMarketMakerTomlConfig>
+    pub mmm: Option<MattiasMarketMakerTomlConfig>,
+    pub optimize: Option<OptimizeTomlConfig>,
 }
 
 impl Config {
@@ -105,6 +109,89 @@ where D: Deserializer<'de> {
     Environment::from_str(&s).map_err(de::Error::custom)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct OptimizeTomlConfig {
+    /// Strategy adapter to optimize: `grid_mm` or `mmm`.
+    pub strategy: String,
+    /// Number of backtest trials to run.
+    #[serde(default = "default_trials")]
+    pub trials: usize,
+    /// Search algorithm: tpe | random | nsgaii.
+    #[serde(default = "default_sampler")]
+    pub sampler: String,
+    /// Random seed for reproducible runs.
+    pub seed: Option<u64>,
+    /// Weight (0..1) of the first objective when ranking Pareto candidates.
+    #[serde(default = "default_weight_obj0")]
+    pub weight_obj0: f64,
+    /// Study name (recorded in the output JSON).
+    pub study_name: Option<String>,
+    /// Train window start (YYYY-MM-DD, UTC).
+    pub train_start: Option<String>,
+    /// Train window end (YYYY-MM-DD, UTC).
+    pub train_end: Option<String>,
+    /// Out-of-sample window start (YYYY-MM-DD, UTC).
+    pub oos_start: Option<String>,
+    /// Out-of-sample window end (YYYY-MM-DD, UTC).
+    pub oos_end: Option<String>,
+    /// Output JSON file for the study results.
+    #[serde(default = "default_json_out")]
+    pub json_out: String,
+    /// File to write the best parameter set as a TOML fragment.
+    pub best_params_out: Option<String>,
+    /// Interval (ms) between portfolio equity snapshots used for the SQN objective.
+    #[serde(default = "default_snapshot_interval_ms")]
+    pub snapshot_interval_ms: u64,
+    /// Account ID used in the backtest venue.
+    #[serde(default = "default_account_id")]
+    pub account_id: String,
+    /// Search space: named parameter ranges (`type = "int" | "float"`, min/max).
+    #[serde(default)]
+    pub params: HashMap<String, ParamKind>,
+}
+
+impl OptimizeTomlConfig {
+    /// Validates the config and returns a `SearchSpace` built from `params`.
+    pub fn search_space(&self) -> Result<crate::optimizer::SearchSpace> {
+        if !(0.0..=1.0).contains(&self.weight_obj0) {
+            anyhow::bail!("weight_obj0 must be within 0..1, got {}", self.weight_obj0);
+        }
+        let params = self
+            .params
+            .iter()
+            .map(|(name, kind)| crate::optimizer::ParamSpec {
+                name: name.clone(),
+                kind: *kind,
+            })
+            .collect();
+        Ok(crate::optimizer::SearchSpace { params })
+    }
+}
+
+fn default_trials() -> usize {
+    200
+}
+
+fn default_sampler() -> String {
+    "tpe".into()
+}
+
+fn default_weight_obj0() -> f64 {
+    0.5
+}
+
+fn default_json_out() -> String {
+    "study.json".into()
+}
+
+fn default_snapshot_interval_ms() -> u64 {
+    crate::optimizer::objective::DEFAULT_SNAPSHOT_INTERVAL_MS
+}
+
+fn default_account_id() -> String {
+    "BYBIT-001".into()
+}
+
 fn default_num_levels() -> usize {
     3
 }
@@ -119,4 +206,20 @@ fn default_requote_threshold_bps() -> u32 {
 
 fn default_recorder_path() -> String {
     "data/".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optimize_section_deserializes() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml");
+        let cfg = Config::load(path.to_string()).expect("config.toml should parse");
+        let opt = cfg.optimize.expect("[optimize] section present");
+        assert_eq!(opt.strategy, "grid_mm");
+        assert_eq!(opt.params.len(), 6);
+        let space = opt.search_space().expect("search space valid");
+        assert_eq!(space.params.len(), 6);
+    }
 }

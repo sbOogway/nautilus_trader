@@ -13,10 +13,14 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-pub mod cli;
-pub mod config;
-pub mod exchange;
-pub mod optimizer;
-pub mod strategy;
-pub mod utils;
+//! Strategy-agnostic parameter optimization.
 
+pub mod objective;
+pub mod param;
+pub mod report;
+pub mod sampler;
+
+pub use objective::{run_backtest, BacktestEnv, BacktestMetrics, SQN_DD_PENALTY};
+pub use param::{ParamKind, ParamSpec, SearchSpace};
+pub use report::{pareto_front, print_trials, top_n_scored, write_study_json, RecordedTrial};
+pub use sampler::{Optimizable, RustunaOptimizer, SamplerKind};

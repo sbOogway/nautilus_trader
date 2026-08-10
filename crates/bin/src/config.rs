@@ -78,12 +78,33 @@ pub struct MattiasMarketMakerTomlConfig {
 }
 
 
+#[allow(non_snake_case)]
+#[derive(Debug, Deserialize)]
+pub struct AvellanedaStoikovTomlConfig {
+    pub exchange: String,
+    pub trader_id: String,
+    pub instrument_id: String,
+    pub trade_size: String,
+    pub gamma: f64,
+    pub sigma: f64,
+    pub kappa: f64,
+    pub arrival_rate: f64,
+    pub time_horizon_secs: f64,
+    pub lookback_secs: u64,
+    pub expire_time_secs: Option<u64>,
+    #[serde(default = "default_recorder_path")]
+    pub path: String,
+    #[serde(deserialize_with = "deserialize_environment")]
+    pub execution_environment: Environment,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(rename = "grid_mm")]
     pub grid_mm: Option<GridMarketMakerTomlConfig>,
     pub recorder: Option<RecorderTomlConfig>,
-    pub mmm: Option<MattiasMarketMakerTomlConfig>
+    pub mmm: Option<MattiasMarketMakerTomlConfig>,
+    pub avellaneda_stoikov: Option<AvellanedaStoikovTomlConfig>,
 }
 
 impl Config {

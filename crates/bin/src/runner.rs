@@ -150,7 +150,7 @@ pub async fn run(config: &Config, runner: &RunnerTomlConfig) -> Result<()> {
                 .as_ref()
                 .context("[runner] strategy 'obi_momentum' requires a [obi_momentum] section")?;
             let strategy = ObiMomentum::new(ObiMomentumConfig::try_from(toml)?);
-            run_strategy(toml, runner, strategy).await
+            run_strategy(toml, runner, config, strategy).await
         }
         other => bail!(
             "unknown strategy '{other}'. Registered strategies: 'grid_mm', 'mmm', 'obi_momentum'"

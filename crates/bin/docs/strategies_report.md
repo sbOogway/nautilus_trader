@@ -662,9 +662,9 @@ w_i(t) = w_i(t-1) * exp(alpha * Sharpe_i(recent))
    - Multi-level OFI extension
    - [arXiv:1807.05599](https://arxiv.org/abs/1807.05599)
 
-7. **Anantha et al. (2024)** — Forecasting High Frequency Order Flow Imbalance
+7. **Anantha & Jain (2024)** — Forecasting High Frequency Order Flow Imbalance using Hawkes Processes
    - OFI prediction methods
-   - [SSRN](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4720806)
+   - [DOI:10.1007/s10614-025-11039-3](https://doi.org/10.1007/s10614-025-11039-3)
 
 8. **Rahman et al. (2024)** — Hybrid VAR-NN for OFI Prediction
    - ML approaches to microstructure

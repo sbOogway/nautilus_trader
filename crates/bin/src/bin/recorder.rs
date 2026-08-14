@@ -14,10 +14,13 @@
 // -------------------------------------------------------------------------------------------------
 
 use clap::Parser;
-use nautilus_bin::cli::Args;
-use nautilus_bin::config::{Config, RecorderTomlConfig};
-use nautilus_bin::exchange::Exchange;
-use nautilus_bin::strategy::recorder::{config::RecorderConfig, strategy::Recorder};
+use nautilus_bin::{
+    cli::Args,
+    config::{Config, RecorderTomlConfig},
+    exchange::Exchange,
+    strategy::recorder::{config::RecorderConfig, strategy::Recorder},
+};
+use nautilus_bybit::common::enums::BybitEnvironment;
 use nautilus_model::identifiers::{InstrumentId, TraderId};
 
 #[tokio::main]
@@ -27,12 +30,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = Args::parse();
 
-    let cfg: RecorderTomlConfig = Config::load(args.config_path)?.recorder.unwrap();
+    let config = Config::load(args.config_path)?;
+    let cfg: RecorderTomlConfig = config.recorder.unwrap();
 
     let exchange: Exchange = cfg.exchange.parse()?;
     let trader_id = TraderId::from(cfg.trader_id.as_str());
 
-    let mut node = exchange.build_node(trader_id)?;
+    let bybit_env = config
+        .bybit
+        .as_ref()
+        .map_or(BybitEnvironment::Mainnet, |bybit| bybit.environment);
+
+    let mut node = exchange.build_node(trader_id, bybit_env)?;
 
     let instrument_id: Vec<InstrumentId> =
         cfg.instrument_id.iter().map(InstrumentId::from).collect();

@@ -2,7 +2,6 @@ use std::{fmt::Debug, num::NonZeroUsize, path::Path, time::Duration};
 
 use ahash::{HashMap, HashMapExt};
 use nautilus_common::actor::DataActor;
-
 use nautilus_model::{
     data::Data, enums::BookType::L2_MBP, identifiers::InstrumentId, instruments::InstrumentAny,
 };

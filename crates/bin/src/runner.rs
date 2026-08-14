@@ -22,6 +22,7 @@ use nautilus_backtest::{
     config::{BacktestDataConfig, BacktestRunConfig, BacktestVenueConfig, NautilusDataType},
     node::BacktestNode,
 };
+use nautilus_bybit::common::enums::BybitEnvironment;
 use nautilus_common::{actor::DataActorNative, component::Component, enums::Environment};
 use nautilus_model::{
     enums::{AccountType, BookType, OmsType},
@@ -133,7 +134,7 @@ pub async fn run(config: &Config, runner: &RunnerTomlConfig) -> Result<()> {
                 .as_ref()
                 .context("[runner] strategy 'grid_mm' requires a [grid_mm] section")?;
             let strategy = GridMarketMaker::new(GridMarketMakerConfig::try_from(toml)?);
-            run_strategy(toml, runner, strategy).await
+            run_strategy(toml, runner, config, strategy).await
         }
         "mmm" => {
             let toml = config
@@ -141,7 +142,7 @@ pub async fn run(config: &Config, runner: &RunnerTomlConfig) -> Result<()> {
                 .as_ref()
                 .context("[runner] strategy 'mmm' requires a [mmm] section")?;
             let strategy = MattiasMarketMaker::new(&MattiasMarketMakerConfig::try_from(toml)?);
-            run_strategy(toml, runner, strategy).await
+            run_strategy(toml, runner, config, strategy).await
         }
         "obi_momentum" => {
             let toml = config
@@ -158,7 +159,12 @@ pub async fn run(config: &Config, runner: &RunnerTomlConfig) -> Result<()> {
 }
 
 /// Shared orchestration for a concrete strategy across execution environments.
-async fn run_strategy<T, C>(toml: &C, runner: &RunnerTomlConfig, strategy: T) -> Result<()>
+async fn run_strategy<T, C>(
+    toml: &C,
+    runner: &RunnerTomlConfig,
+    config: &Config,
+    strategy: T,
+) -> Result<()>
 where
     T: Strategy + StrategyNative + DataActorNative + Component + Debug + 'static,
     C: StrategyToml,
@@ -241,10 +247,23 @@ where
 
             log::info!("{snapshots:#?}");
         }
-        Environment::Sandbox => todo!(),
-        Environment::Live => {
+        Environment::Sandbox | Environment::Live => {
+            let bybit_env = config
+                .bybit
+                .as_ref()
+                .map_or(BybitEnvironment::Mainnet, |bybit| bybit.environment);
+
+            if toml.execution_environment() == Environment::Sandbox
+                && exchange == Exchange::Bybit
+                && bybit_env == BybitEnvironment::Mainnet
+            {
+                bail!(
+                    "sandbox execution environment requires [bybit] environment 'demo' or 'testnet'"
+                );
+            }
+
             let mut node = exchange
-                .build_node(trader_id)
+                .build_node(trader_id, bybit_env)
                 .map_err(|e: Box<dyn std::error::Error>| from_box_err(e.as_ref()))?;
             node.add_strategy(strategy)?;
             node.run().await?;

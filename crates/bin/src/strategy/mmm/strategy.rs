@@ -1,3 +1,5 @@
+use std::{fmt::Debug, num::NonZeroUsize, path::Path, time::Duration};
+
 use anyhow::Ok;
 use nautilus_common::actor::DataActor;
 use nautilus_core::UnixNanos;
@@ -16,7 +18,6 @@ use nautilus_model::{
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use nautilus_trading::{Strategy, StrategyCore, nautilus_strategy};
 use rust_decimal::Decimal;
-use std::{fmt::Debug, num::NonZeroUsize, path::Path, time::Duration};
 
 use crate::strategy::mmm::{
     config::MattiasMarketMakerConfig,

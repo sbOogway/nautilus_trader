@@ -28,8 +28,10 @@ use nautilus_model::identifiers::{AccountId, TraderId};
 pub const ACCOUNT_ID: &str = "BYBIT-001";
 pub const NODE_NAME: &str = "BYBIT-GRID-MM-001";
 
-pub fn build_node(trader_id: TraderId) -> Result<LiveNode, Box<dyn std::error::Error>> {
-    let bybit_env = BybitEnvironment::Mainnet;
+pub fn build_node(
+    trader_id: TraderId,
+    bybit_env: BybitEnvironment,
+) -> Result<LiveNode, Box<dyn std::error::Error>> {
     let environment = Environment::Live;
     let account_id = AccountId::from(ACCOUNT_ID);
     let node_name = NODE_NAME.to_string();

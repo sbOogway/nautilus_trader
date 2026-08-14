@@ -1,3 +1,7 @@
+[bybit]
+# Bybit API environment: "mainnet" (live), "demo" (paper trading), "testnet".
+environment = "mainnet"
+
 [runner]
 # Strategy to run. Switch between registered strategies by editing this value,
 # no recompilation needed. Registered: "grid_mm", "mmm", "obi_momentum"

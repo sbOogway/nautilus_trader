@@ -20,6 +20,7 @@ pub mod dydx;
 
 use std::str::FromStr;
 
+use nautilus_bybit::common::enums::BybitEnvironment;
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::TraderId;
 
@@ -42,14 +43,18 @@ impl FromStr for Exchange {
 }
 
 impl Exchange {
-    pub fn build_node(self, trader_id: TraderId) -> Result<LiveNode, Box<dyn std::error::Error>> {
+    pub fn build_node(
+        self,
+        trader_id: TraderId,
+        bybit_env: BybitEnvironment,
+    ) -> Result<LiveNode, Box<dyn std::error::Error>> {
         match self {
             Self::Dydx => {
                 let node = dydx::build_node(trader_id)?;
                 Ok(node)
             }
             Self::Bybit => {
-                let node = bybit::build_node(trader_id)?;
+                let node = bybit::build_node(trader_id, bybit_env)?;
                 Ok(node)
             }
         }

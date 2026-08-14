@@ -17,9 +17,7 @@
 //! the config file, without recompilation.
 
 use clap::Parser;
-use nautilus_bin::cli::Args;
-use nautilus_bin::config::Config;
-use nautilus_bin::runner;
+use nautilus_bin::{cli::Args, config::Config, runner};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

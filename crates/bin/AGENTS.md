@@ -9,7 +9,7 @@ lives at the repo root; Python v2 (PyO3) lives under `python/`.
 
 - Two binaries: `strategy_runner` (dispatches on `[runner] strategy` in `config.toml`, no recompilation to switch) and `recorder`. `cargo check -p nautilus_bin` / `cargo run --bin strategy_runner` from the repo root or `crates/bin`. Don't use `make build-debug` for this crate.
 - Strategies implement the Rust-native v2 `nautilus_trading::Strategy` trait (`src/strategy/*`). Registered names: `grid_mm`, `mmm`. Each strategy has its own TOML section with `execution_environment = "backtest" | "live" | "sandbox"`.
-- Backtest mode reads parquet order-book/trade data from the catalog `path` (e.g. `/var/lib/nautilus-trader/`) and requires `[runner] start_date`/`end_date`/`run_id`. Sandbox is an unimplemented `todo!()` in `src/runner.rs`.
+- Backtest mode reads parquet order-book/trade data from the catalog `path` (e.g. `/var/lib/nautilus-trader/`) and requires `[runner] start_date`/`end_date`/`run_id`. Sandbox/live both build a live node; the Bybit API environment (`mainnet`/`demo`/`testnet`) is set via the `[bybit] environment` field in `config.toml` (paper trading = `"demo"`). Sandbox refuses `mainnet` to prevent real orders.
 - Live mode needs exchange credentials from `.env` (dotenvy) / env vars; venues: bybit, dydx. `Environment::Sandbox` and `Environment::Live` both build a `nautilus_live::LiveNode` — see `src/exchange.rs`.
 - RPM packaging via `cargo generate-rpm` (`[package.metadata.generate-rpm]`): binaries to `/usr/bin`, config to `/etc/nautilus-trader/`, systemd unit `nautilus-recorder`. Requires prebuilt release binaries (`target/release/{strategy_runner,recorder}`).
 - No tests in this crate yet.

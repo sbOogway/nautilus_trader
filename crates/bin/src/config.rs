@@ -17,6 +17,7 @@ use std::{path::Path, str::FromStr};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use nautilus_bybit::common::enums::BybitEnvironment;
 use nautilus_common::enums::Environment;
 use nautilus_model::types::Quantity;
 use rust_decimal::Decimal;
@@ -115,6 +116,15 @@ pub struct MattiasMarketMakerTomlConfig {
     pub execution_environment: Environment,
 }
 
+/// Bybit exchange section, mirroring the adapter client configs
+/// (`BybitDataClientConfig`/`BybitExecClientConfig`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct BybitTomlConfig {
+    /// Bybit API environment: `"mainnet"`, `"demo"` (paper trading) or `"testnet"`.
+    #[serde(default = "default_bybit_environment")]
+    pub environment: BybitEnvironment,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RunnerTomlConfig {
     /// Name of the strategy to run. Must match a registered strategy
@@ -146,6 +156,7 @@ pub struct Config {
     pub mmm: Option<MattiasMarketMakerTomlConfig>,
     pub obi_momentum: Option<ObiMomentumTomlConfig>,
     pub runner: Option<RunnerTomlConfig>,
+    pub bybit: Option<BybitTomlConfig>,
 }
 
 impl Config {
@@ -211,6 +222,10 @@ fn default_regime_history_window() -> usize {
 
 fn default_venue() -> String {
     "BYBIT".into()
+}
+
+fn default_bybit_environment() -> BybitEnvironment {
+    BybitEnvironment::Mainnet
 }
 
 fn default_account_id() -> String {

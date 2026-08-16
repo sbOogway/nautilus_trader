@@ -32,12 +32,15 @@ use nautilus_trading::{Strategy, StrategyNative};
 
 use crate::{
     config::{
-        Config, GridMarketMakerTomlConfig, MattiasMarketMakerTomlConfig, ObiMomentumTomlConfig,
-        RunnerTomlConfig,
+        Config, GridMarketMakerTomlConfig, HurstVpinDirectionalTomlConfig,
+        MattiasMarketMakerTomlConfig, ObiMomentumTomlConfig, RunnerTomlConfig,
     },
     exchange::Exchange,
     strategy::{
         grid_mm::{config::GridMarketMakerConfig, strategy::GridMarketMaker},
+        hurst_vpin_directional::{
+            config::HurstVpinDirectionalConfig, strategy::HurstVpinDirectional,
+        },
         mmm::{config::MattiasMarketMakerConfig, strategy::MattiasMarketMaker},
         obi_momentum::{config::ObiMomentumConfig, strategy::ObiMomentum},
     },
@@ -122,6 +125,28 @@ impl StrategyToml for ObiMomentumTomlConfig {
     }
 }
 
+impl StrategyToml for HurstVpinDirectionalTomlConfig {
+    fn exchange(&self) -> &str {
+        &self.exchange
+    }
+
+    fn trader_id(&self) -> &str {
+        &self.trader_id
+    }
+
+    fn instrument_id(&self) -> &str {
+        &self.instrument_id
+    }
+
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn execution_environment(&self) -> Environment {
+        self.execution_environment
+    }
+}
+
 /// Runs the strategy selected in `[runner]` of the given config.
 ///
 /// The strategy is chosen at runtime by name, so switching strategies
@@ -152,8 +177,17 @@ pub async fn run(config: &Config, runner: &RunnerTomlConfig) -> Result<()> {
             let strategy = ObiMomentum::new(ObiMomentumConfig::try_from(toml)?);
             run_strategy(toml, runner, config, strategy).await
         }
+        "hurst_vpin" => {
+            let toml = config
+                .hurst_vpin
+                .as_ref()
+                .context("[runner] strategy 'hurst_vpin' requires a [hurst_vpin] section")?;
+            let strategy = HurstVpinDirectional::new(HurstVpinDirectionalConfig::try_from(toml)?);
+            run_strategy(toml, runner, config, strategy).await
+        }
         other => bail!(
-            "unknown strategy '{other}'. Registered strategies: 'grid_mm', 'mmm', 'obi_momentum'"
+            "unknown strategy '{other}'. Registered strategies: 'grid_mm', 'mmm', 'obi_momentum', \
+             'hurst_vpin'"
         ),
     }
 }

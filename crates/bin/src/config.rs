@@ -116,6 +116,35 @@ pub struct MattiasMarketMakerTomlConfig {
     pub execution_environment: Environment,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct HurstVpinDirectionalTomlConfig {
+    pub exchange: String,
+    pub trader_id: String,
+    pub instrument_id: String,
+    pub trade_size: String,
+    pub bar_volume: usize,
+    #[serde(default = "default_hurst_window")]
+    pub hurst_window: usize,
+    #[serde(default = "default_hurst_lags")]
+    pub hurst_lags: Vec<usize>,
+    #[serde(default = "default_hurst_enter")]
+    pub hurst_enter: f64,
+    #[serde(default = "default_hurst_exit")]
+    pub hurst_exit: f64,
+    #[serde(default = "default_vpin_window")]
+    pub vpin_window: usize,
+    #[serde(default = "default_vpin_threshold")]
+    pub vpin_threshold: f64,
+    #[serde(default = "default_max_holding_secs")]
+    pub max_holding_secs: u64,
+    #[serde(default = "default_timer_interval_ms")]
+    pub timer_interval_ms: u64,
+    #[serde(default = "default_recorder_path")]
+    pub path: String,
+    #[serde(deserialize_with = "deserialize_environment")]
+    pub execution_environment: Environment,
+}
+
 /// Bybit exchange section, mirroring the adapter client configs
 /// (`BybitDataClientConfig`/`BybitExecClientConfig`).
 #[derive(Debug, Clone, Deserialize)]
@@ -155,6 +184,7 @@ pub struct Config {
     pub recorder: Option<RecorderTomlConfig>,
     pub mmm: Option<MattiasMarketMakerTomlConfig>,
     pub obi_momentum: Option<ObiMomentumTomlConfig>,
+    pub hurst_vpin: Option<HurstVpinDirectionalTomlConfig>,
     pub runner: Option<RunnerTomlConfig>,
     pub bybit: Option<BybitTomlConfig>,
 }
@@ -234,6 +264,34 @@ fn default_account_id() -> String {
 
 fn default_grid_step_bps() -> u32 {
     10
+}
+
+fn default_hurst_window() -> usize {
+    128
+}
+
+fn default_hurst_lags() -> Vec<usize> {
+    vec![4, 8, 16, 32]
+}
+
+fn default_hurst_enter() -> f64 {
+    0.55
+}
+
+fn default_hurst_exit() -> f64 {
+    0.50
+}
+
+fn default_vpin_window() -> usize {
+    50
+}
+
+fn default_vpin_threshold() -> f64 {
+    0.30
+}
+
+fn default_max_holding_secs() -> u64 {
+    3600
 }
 
 fn default_requote_threshold_bps() -> u32 {
